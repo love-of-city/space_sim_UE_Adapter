@@ -25,11 +25,56 @@ JOINTS = (
     "wrist_3_joint",
 )
 HOME = (-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0)
+INITIAL_HOLD_SECONDS = 1.0
 
 
-def run(workspace: Path, host: str, port: int, duration: float, simulation_rate: float) -> None:
+def sequential_joint_targets(
+    sim_seconds: float,
+    joint_angle_rad: float,
+    move_seconds: float,
+    hold_seconds: float,
+) -> tuple[float, ...]:
+    """Move each joint once by a fixed angle, in order, then hold it there."""
+
+    if not math.isfinite(sim_seconds) or sim_seconds < 0.0:
+        raise ValueError("sim_seconds must be finite and non-negative")
+    if not math.isfinite(joint_angle_rad) or abs(joint_angle_rad) > math.radians(45.0):
+        raise ValueError("joint_angle_rad must be finite and within +/-45 degrees")
+    if not math.isfinite(move_seconds) or move_seconds <= 0.0:
+        raise ValueError("move_seconds must be finite and positive")
+    if not math.isfinite(hold_seconds) or hold_seconds < 0.0:
+        raise ValueError("hold_seconds must be finite and non-negative")
+
+    elapsed = sim_seconds - INITIAL_HOLD_SECONDS
+    stage_seconds = move_seconds + hold_seconds
+    targets = list(HOME)
+    for index, home in enumerate(HOME):
+        stage_time = elapsed - index * stage_seconds
+        if stage_time <= 0.0:
+            continue
+        progress = min(stage_time / move_seconds, 1.0)
+        # Cubic smoothstep has zero velocity at the start and end, avoiding an
+        # actuator command step that could excite the position servo.
+        smooth_progress = progress * progress * (3.0 - 2.0 * progress)
+        targets[index] = home + joint_angle_rad * smooth_progress
+    return tuple(targets)
+
+
+def run(
+    workspace: Path,
+    host: str,
+    port: int,
+    duration: float,
+    simulation_rate: float,
+    joint_angle_degrees: float,
+    move_seconds: float,
+    hold_seconds: float,
+) -> None:
     if duration <= 0.0 or simulation_rate <= 0.0:
         raise ValueError("duration and simulation_rate must be positive")
+    joint_angle_rad = math.radians(joint_angle_degrees)
+    # Validate the motion parameters before constructing the simulation.
+    sequential_joint_targets(0.0, joint_angle_rad, move_seconds, hold_seconds)
     model_root = workspace / "test" / "model" / "arm" / "universal_robots_ur5e"
     mjcf = model_root / "scene.xml"
     catalog = workspace / "Unreal" / "BskUnrealRenderer" / "Config" / "BskAssets" / "ur5e.json"
@@ -90,14 +135,11 @@ def run(workspace: Path, host: str, port: int, duration: float, simulation_rate:
         total_frames = int(math.ceil(duration * 30.0))
         while frame <= total_frames:
             sim_seconds = frame / 30.0
-            phase = 2.0 * math.pi * sim_seconds / 12.0
-            targets = (
-                HOME[0] + 0.45 * math.sin(phase),
-                HOME[1] + 0.25 * math.sin(phase * 0.7),
-                HOME[2] + 0.35 * math.sin(phase * 0.9),
-                HOME[3] + 0.5 * math.sin(phase * 1.2),
-                HOME[4] + 0.4 * math.sin(phase * 0.8),
-                HOME[5] + 0.7 * math.sin(phase * 1.4),
+            targets = sequential_joint_targets(
+                sim_seconds,
+                joint_angle_rad,
+                move_seconds,
+                hold_seconds,
             )
             for message, target in zip(command_messages, targets):
                 message.write(messaging.SingleActuatorMsgPayload(input=target))
@@ -117,10 +159,37 @@ def main() -> None:
     parser.add_argument("--workspace", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5558)
-    parser.add_argument("--duration", type=float, default=120.0)
+    parser.add_argument("--duration", type=float, default=22.0)
     parser.add_argument("--simulation-rate", type=float, default=1.0)
+    parser.add_argument(
+        "--joint-angle-deg",
+        type=float,
+        default=20.0,
+        help="fixed angle added to each joint, in sequence (default: 20 degrees)",
+    )
+    parser.add_argument(
+        "--move-seconds",
+        type=float,
+        default=2.0,
+        help="smooth movement duration for each joint (default: 2 seconds)",
+    )
+    parser.add_argument(
+        "--hold-seconds",
+        type=float,
+        default=0.75,
+        help="pause after each joint movement (default: 0.75 seconds)",
+    )
     args = parser.parse_args()
-    run(args.workspace.resolve(), args.host, args.port, args.duration, args.simulation_rate)
+    run(
+        args.workspace.resolve(),
+        args.host,
+        args.port,
+        args.duration,
+        args.simulation_rate,
+        args.joint_angle_deg,
+        args.move_seconds,
+        args.hold_seconds,
+    )
     print("UR5e Basilisk/MJScene live stream finished")
 
 

@@ -103,6 +103,12 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter\Unreal\BskUnrealRenderer
 
 `test_demo8.ps1` 检查 1063 个 4 秒状态样本、12 个动态刚体、11 个 MJ geoms、8 块太阳翼姿态变化、±15 m 编队距离、6 个仪器可视元素和 3 个天体。
 
+UR5e 示例默认让六个关节依次平滑转动 20 度，每个关节运动 2 秒、停顿 0.75 秒，最终保持目标姿态：
+
+```powershell
+.\scripts\run_ur5e.ps1 -Duration 22 -SimulationRate 1 -JointAngleDegrees 20
+```
+
 ## 架构
 
 ```text

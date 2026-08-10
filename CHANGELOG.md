@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- UR5e 示例改为六个关节依次平滑转动固定角度并保持，默认每关节 20°。
+- MJCF 动态目标灯设为 Movable，避免每帧 Mobility 警告造成 Game Thread 卡顿。
+
 ## 0.2.0 - 2026-08-10
 
 - 建立统一的 BSK→UE5 单仓库版本基线。

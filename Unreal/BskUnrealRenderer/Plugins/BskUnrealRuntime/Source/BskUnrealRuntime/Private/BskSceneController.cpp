@@ -903,6 +903,11 @@ AActor* ABskSceneController::SpawnVisual(const FBskVisualDefinition& Definition)
             }
         }
         if (!LightActor || !LightComponent) return nullptr;
+        // MJCF target-body lights are rotated as their target moves. Unreal
+        // defaults spawned light components to a non-movable mobility, which
+        // otherwise emits a warning on every rendered frame and stalls the
+        // Game Thread with log I/O.
+        LightComponent->SetMobility(EComponentMobility::Movable);
         const double Peak = FMath::Max3(Definition.LightDiffuseRgb.X, Definition.LightDiffuseRgb.Y, Definition.LightDiffuseRgb.Z);
         const FVector3d Normalized = Peak > UE_DOUBLE_SMALL_NUMBER ? Definition.LightDiffuseRgb / Peak : FVector3d::OneVector;
         LightComponent->SetLightColor(FLinearColor(static_cast<float>(Normalized.X), static_cast<float>(Normalized.Y), static_cast<float>(Normalized.Z)));

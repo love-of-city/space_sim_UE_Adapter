@@ -1,7 +1,11 @@
 param(
     [string]$UnrealRoot = '',
-    [double]$Duration = 120.0,
+    [double]$Duration = 22.0,
     [double]$SimulationRate = 1.0,
+    [ValidateRange(-45.0, 45.0)]
+    [double]$JointAngleDegrees = 20.0,
+    [double]$MoveSeconds = 2.0,
+    [double]$HoldSeconds = 0.75,
     [int]$Port = 5558,
     [string]$ScreenshotPath = '',
     [ValidateSet('auto', 'preserve', 'recompute')]
@@ -49,8 +53,8 @@ try {
     Start-Sleep -Milliseconds 500
 
     $scenario = Join-Path $ProjectRoot 'examples\scenario_ur5e_unreal.py'
-    Write-Output "Running UR5e with authoritative MJScene dynamics at ${SimulationRate}x real time ..."
-    & conda run --no-capture-output -n mujoco-dev python $scenario --workspace $WorkspaceRoot --host 127.0.0.1 --port $Port --duration $Duration --simulation-rate $SimulationRate
+    Write-Output "Running UR5e sequential fixed-angle motion (${JointAngleDegrees} deg/joint) with authoritative MJScene dynamics at ${SimulationRate}x real time ..."
+    & conda run --no-capture-output -n mujoco-dev python $scenario --workspace $WorkspaceRoot --host 127.0.0.1 --port $Port --duration $Duration --simulation-rate $SimulationRate --joint-angle-deg $JointAngleDegrees --move-seconds $MoveSeconds --hold-seconds $HoldSeconds
     if ($LASTEXITCODE -ne 0) { throw "UR5e sender failed with exit code $LASTEXITCODE." }
 } finally {
     if (!$KeepRendererOpen) { & (Join-Path $PSScriptRoot 'stop_renderer.ps1') }

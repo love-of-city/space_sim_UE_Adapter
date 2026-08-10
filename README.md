@@ -44,8 +44,8 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 # Demo 8：严格 1× 仿真时间
 .\scripts\run_demo8.ps1 -Live -LiveRate 1 -KeepRendererOpen -BasiliskRoot E:\mujoco_demo\basilisk
 
-# UR5e/MJScene 通用多刚体
-.\scripts\run_ur5e.ps1 -NormalMode preserve -Duration 120 -SimulationRate 1
+# UR5e/MJScene：六个关节依次平滑转动 20 度并保持
+.\scripts\run_ur5e.ps1 -NormalMode preserve -Duration 22 -SimulationRate 1 -JointAngleDegrees 20
 ```
 
 仓库级脚本只转发参数，原有 `Unreal\BskUnrealRenderer\scripts` 命令仍然可用。
