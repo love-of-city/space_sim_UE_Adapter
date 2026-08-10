@@ -1,0 +1,23 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "BskProtocolTypes.h"
+
+/** Transport-neutral source for live TCP, future UDP/binary, or replay files. */
+class BSKUNREALRUNTIME_API IBskFrameSource
+{
+public:
+    virtual ~IBskFrameSource() = default;
+    virtual bool StartSource() = 0;
+    virtual void StopSource() = 0;
+    virtual bool ConsumeLatest(FBskRenderFrame& OutFrame) = 0;
+    virtual bool ConsumeLatestManifest(FBskSceneManifest& OutManifest) { return false; }
+    virtual bool ConsumeEvent(FBskRenderEvent& OutEvent) { return false; }
+    virtual bool SetPaused(bool bPaused) { return false; }
+    virtual bool SetPlaybackRate(double Rate) { return false; }
+    virtual bool StepOnce() { return false; }
+    virtual bool SeekSimulationTime(int64 SimulationTimeNanoseconds) { return false; }
+    virtual FString GetStatus() const = 0;
+};
+
+using IBskMessageSource = IBskFrameSource;

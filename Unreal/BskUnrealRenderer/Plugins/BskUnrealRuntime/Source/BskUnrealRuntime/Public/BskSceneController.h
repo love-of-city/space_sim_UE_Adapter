@@ -1,0 +1,161 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "BskCoordinateConverter.h"
+#include "BskFrameSource.h"
+#include "BskProtocolTypes.h"
+#include "BskSceneController.generated.h"
+
+class ADirectionalLight;
+class APostProcessVolume;
+class ASpotLight;
+class ASkyAtmosphere;
+class UStaticMeshComponent;
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnBskFrameApplied, const FBskRenderFrame&);
+
+UCLASS()
+class BSKUNREALRUNTIME_API ABskSceneController : public AActor
+{
+    GENERATED_BODY()
+
+public:
+    ABskSceneController();
+    virtual ~ABskSceneController() override;
+    virtual void Tick(float DeltaSeconds) override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer")
+    FString GetReceiverStatus() const;
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer")
+    int64 GetLastFrameId() const { return LastFrameId; }
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Replay")
+    bool SetReplayPaused(bool bPaused);
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Replay")
+    bool SetReplayRate(double Rate);
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Replay")
+    bool StepReplay();
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Replay")
+    bool SeekReplayNanoseconds(int64 SimulationTimeNanoseconds);
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Camera")
+    bool FocusObject(const FString& ObjectId, bool bFollow = false);
+
+    /** Control renderer-only helpers such as sensor FOV and antenna cones. */
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Visual Helpers")
+    void SetVisualKindVisible(const FString& VisualKind, bool bVisible);
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Visual Helpers")
+    bool ToggleVisualKindVisible(const FString& VisualKind);
+
+    UFUNCTION(BlueprintPure, Category="BSK Renderer|Visual Helpers")
+    bool IsVisualKindVisible(const FString& VisualKind) const;
+
+    FVector GetConfiguredCameraPositionCentimeters() const;
+    FVector GetConfiguredCameraLookAtCentimeters() const;
+
+    /** Hook for future recorders, sensor capture, multi-camera, and time synchronization. */
+    FOnBskFrameApplied& OnFrameApplied() { return FrameAppliedEvent; }
+
+protected:
+    virtual void BeginPlay() override;
+
+private:
+    struct FObjectSpec
+    {
+        FString AssetType = TEXT("placeholder");
+        FString AssetPath;
+        FString ActorClass;
+        FString PlaceholderShape = TEXT("cube");
+        FVector3d SizeMeters = FVector3d(1.5, 1.0, 0.8);
+        FVector3d Scale = FVector3d::OneVector;
+        FLinearColor Color = FLinearColor(0.25f, 0.55f, 1.0f);
+    };
+
+    bool LoadConfiguration();
+    void ApplyManifest(const FBskSceneManifest& Manifest);
+    void ApplyEvent(const FBskRenderEvent& Event);
+    void ApplyFrame(const FBskRenderFrame& Frame);
+    FBskRenderFrame InterpolateFrame(const FBskRenderFrame& From, const FBskRenderFrame& To, double Alpha) const;
+    AActor* GetOrCreateActor(const FBskRenderObjectState& State);
+    AActor* FindBoundActor(const FString& ObjectName) const;
+    AActor* SpawnFromSpec(const FString& ObjectName, const FObjectSpec& Spec);
+    AActor* SpawnPlaceholder(const FString& ObjectName, const FObjectSpec& Spec);
+    AActor* SpawnManifestObject(const FBskObjectDefinition& Definition);
+    AActor* SpawnCelestialBody(const FBskCelestialBodyDefinition& Definition);
+    AActor* SpawnVisual(const FBskVisualDefinition& Definition);
+    AActor* SpawnCamera(const FBskCameraDefinition& Definition);
+    void ApplyVisualMountTransform(AActor* Actor, const FBskVisualDefinition& Definition) const;
+    void RefreshVisualVisibility(const FString& VisualId);
+    void AttachManifestChildren();
+    void UpdateCelestialBodies(const FBskRenderFrame& Frame);
+    void UpdateVisualStates(const FBskRenderFrame& Frame);
+    void UpdateLightTargets();
+    void ConfigureManifestLighting(const FBskSceneManifest& Manifest);
+    void DrawOrbitLines(const FBskRenderFrame& Frame) const;
+    AActor* SpawnUsdStage(const FString& ObjectName, const FObjectSpec& Spec);
+    void CreateEnvironment();
+    FObjectSpec ResolveSpec(const FBskRenderObjectState& State) const;
+
+    TUniquePtr<IBskFrameSource> Receiver;
+    FOnBskFrameApplied FrameAppliedEvent;
+    TMap<FString, TObjectPtr<AActor>> BoundActors;
+    TMap<FString, TObjectPtr<AActor>> CelestialActors;
+    TMap<FString, TObjectPtr<AActor>> VisualActors;
+    TMap<FString, FQuat> VisualBaseRotations;
+    TMap<FString, FVector> VisualBaseScales;
+    TMap<FString, bool> VisualDynamicVisibility;
+    TMap<FString, bool> VisualKindVisibility;
+    TMap<FString, TObjectPtr<AActor>> CameraActors;
+    TObjectPtr<ADirectionalLight> SunLight;
+    TObjectPtr<ADirectionalLight> FillLight;
+    TObjectPtr<ASpotLight> Headlight;
+    TObjectPtr<APostProcessVolume> ExposureVolume;
+    TObjectPtr<ASkyAtmosphere> EarthAtmosphere;
+    TObjectPtr<UStaticMeshComponent> DeepSkyComponent;
+    TSet<FString> CelestialBillboardIds;
+    TMap<FString, FObjectSpec> ObjectSpecs;
+    TMap<FString, FBskObjectDefinition> ManifestObjects;
+    TMap<FString, FBskCelestialBodyDefinition> ManifestCelestialBodies;
+    TMap<FString, FBskVisualDefinition> ManifestVisuals;
+    TMap<FString, FBskCameraDefinition> ManifestCameras;
+    FBskCoordinateConverter Converter;
+    FString ListenAddress = TEXT("127.0.0.1");
+    FString ReplayPath;
+    int32 ListenPort = 5558;
+    double ReplayRate = 1.0;
+    uint32 MaxPacketBytes = BskProtocol::DefaultMaxPacketBytes;
+    bool bAllowExternalAssets = false;
+    bool bUseOfficialCelestialAssets = true;
+    bool bUseEarthSkyAtmosphere = true;
+    int32 StarCount = 320;
+    double StarRadiusMeters = 250.0;
+    double CelestialVaultRadiusKilometers = 500000.0;
+    double CelestialBackgroundIntensity = 0.35;
+    double SunIntensityLux = 8.0;
+    double FillLightIntensityLux = 1.5;
+    double MaterialExposureBias = 1.0;
+    double ActiveMaterialAmbient = 0.18;
+    FRotator SunRotation = FRotator(-25.0, -35.0, 15.0);
+    FVector3d CameraPositionMeters = FVector3d(10.0, -16.0, 8.0);
+    FVector3d CameraLookAtMeters = FVector3d(0.0, 3.0, 0.0);
+    int64 LastFrameId = -1;
+    FString ActiveSessionId;
+    int64 ActiveManifestRevision = 0;
+    FString TimeMode = TEXT("interpolated");
+    double InterpolationDelaySeconds = 0.1;
+    double MaxExtrapolationSeconds = 0.1;
+    double LastFrameArrivalSeconds = 0.0;
+    double BlendElapsedSeconds = 0.0;
+    double BlendDurationSeconds = 1.0 / 30.0;
+    bool bHasTargetFrame = false;
+    FBskRenderFrame PreviousFrame;
+    FBskRenderFrame TargetFrame;
+    bool bScreenshotRequested = false;
+};

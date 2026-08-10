@@ -1,0 +1,56 @@
+{
+  "network": {
+    "listen_address": "127.0.0.1",
+    "port": 5558,
+    "max_packet_bytes": 33554432
+  },
+  "replay": {
+    "path": "",
+    "rate": 1.0
+  },
+  "assets": {
+    "allow_external_files": false
+  },
+  "coordinates": {
+    "centimeters_per_meter": 100.0,
+    "mirror_local_y_for_unreal": true
+  },
+  "visuals": {
+    "visibility_by_kind": {
+      "css": false,
+      "generic_sensor": false,
+      "transceiver": false
+    }
+  },
+  "scene": {
+    "use_official_celestial_assets": true,
+    "use_earth_sky_atmosphere": true,
+    "celestial_vault_radius_km": 500000.0,
+    "celestial_background_intensity": 0.12,
+    "sun_intensity_lux": 8.0,
+    "fill_light_intensity_lux": 3.0,
+    "material_exposure_bias": -1.0,
+    "sun_rotation_deg": [-25.0, -35.0, 15.0],
+    "star_count": 900,
+    "star_radius_m": 250.0,
+    "camera_position_m": [10.0, -16.0, 8.0],
+    "camera_look_at_m": [0.0, 3.0, 0.0],
+    "time_mode": "interpolated",
+    "interpolation_delay_ms": 100.0,
+    "max_extrapolation_ms": 100.0
+  },
+  "objects": {
+    "chaser": {
+      "asset_type": "placeholder",
+      "placeholder_shape": "cube",
+      "size_m": [2.0, 1.4, 1.0],
+      "color": [0.08, 0.32, 0.95, 1.0]
+    },
+    "target": {
+      "asset_type": "placeholder",
+      "placeholder_shape": "sphere",
+      "size_m": [2.2, 1.6, 1.2],
+      "color": [0.95, 0.18, 0.05, 1.0]
+    }
+  }
+}

@@ -1,0 +1,62 @@
+# This repository tracks only the BSK -> UE renderer. Other experiments that
+# happen to live beside it in this workspace are intentionally excluded.
+/Isaac/
+/basilisk/
+/demo_outputs/
+/learning_mjscene/
+/output/
+/simple_rl_code/
+/spacemind/
+/space_sim/
+/tmp/
+/run_vizard_demo.ps1
+/*.log
+
+# Keep the redistributable UR5e integration fixture; ignore other local tests.
+/test/*
+!/test/model/
+/test/model/*
+!/test/model/arm/
+/test/model/arm/*
+!/test/model/arm/universal_robots_ur5e/
+!/test/model/arm/universal_robots_ur5e/**
+
+# Unreal Engine generated state.
+**/.vs/
+**/Binaries/
+**/DerivedDataCache/
+**/Intermediate/
+**/Saved/
+**/Dist/
+**/Plugins/*/Binaries/
+**/Plugins/*/Intermediate/
+**/Content/Developers/
+**/Content/Collections/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# Python and test caches.
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+
+# Editors and operating systems.
+.idea/
+.vscode/
+*.user
+*.userprefs
+.DS_Store
+Thumbs.db

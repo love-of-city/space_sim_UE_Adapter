@@ -1,0 +1,78 @@
+# BSK→UE5 通用可视化接口
+
+这是一个统一版本管理、双运行端部署的航天可视化接口。Basilisk/MJScene 始终是唯一动力学权威；Unreal Engine 5 只接收状态并负责渲染、相机、特效与任务 UI。
+
+## 仓库结构
+
+```text
+Adapters/bsk_render_adapter/             通用 Python/BSK 发送端
+Unreal/BskUnrealRenderer/                UE 5.6 项目与 Runtime C++ 插件
+test/model/arm/universal_robots_ur5e/    BSD-3-Clause UR5e 集成测试资产
+scripts/                                 仓库级统一命令
+```
+
+发送端和接收端属于同一个产品与 Git 版本，但运行在不同进程中。两端通过 `bsk-render/2` 的大端 `uint32` 长度前缀 JSON 通信；动态帧采用最新帧覆盖，不反压 Basilisk。
+
+详细协议和 UE 扩展接口见 [UE 项目说明](Unreal/BskUnrealRenderer/README.md)与 [协议文档](Unreal/BskUnrealRenderer/docs/PROTOCOL.md)。
+
+## 环境
+
+- Unreal Engine 5.6.1；本机默认路径为 `E:\UE5.6\UE_5.6`
+- Visual Studio 2022、MSVC 与 Windows SDK
+- Conda 环境 `mujoco-dev`，包含 Basilisk/MJScene 和 NumPy
+- Git LFS（用于 `.uasset`、OBJ 和纹理）
+
+UE 引擎、Conda 环境和 Basilisk 上游源码不进入本仓库。Demo 8 会读取同级工作区中的 `basilisk/examples/mujoco/scenarioMJSceneVizard.py`，但不会修改它。
+
+## 统一命令
+
+```powershell
+Set-Location E:\mujoco_demo\space_sim_UE_adapter
+
+# 构建与全部自动化测试
+.\scripts\build.ps1
+.\scripts\test.ps1
+.\scripts\smoke_e2e.ps1
+
+# 普通双航天器
+.\scripts\run_demo.ps1
+.\scripts\run_demo.ps1 -Sender Basilisk -Duration 60
+
+# Demo 8：在线流式；120× 时约 30 Hz 输入
+.\scripts\run_demo8.ps1 -Live -LiveRate 120 -BasiliskRoot E:\mujoco_demo\basilisk
+
+# Demo 8：严格 1× 仿真时间
+.\scripts\run_demo8.ps1 -Live -LiveRate 1 -KeepRendererOpen -BasiliskRoot E:\mujoco_demo\basilisk
+
+# UR5e/MJScene 通用多刚体
+.\scripts\run_ur5e.ps1 -NormalMode preserve -Duration 120 -SimulationRate 1
+```
+
+仓库级脚本只转发参数，原有 `Unreal\BskUnrealRenderer\scripts` 命令仍然可用。
+`scripts` 目录同时提供 `start_renderer.ps1`、`stop_renderer.ps1`、`run_bsk.ps1`、`run_mock.ps1`、`test_demo8.ps1`、`package.ps1` 及 MJCF 资产准备入口。
+
+## Python 接入
+
+开发安装：
+
+```powershell
+conda run -n mujoco-dev python -m pip install -e E:\mujoco_demo\space_sim_UE_adapter
+```
+
+场景代码使用：
+
+```python
+from bsk_render_adapter import BasiliskRenderBridge
+```
+
+`bsk_unreal_adapter.BasiliskUnrealBridge` 作为旧 UE 命名兼容层继续保留。
+
+## Git 约定
+
+- `main` 保存可构建、可测试的基线。
+- 功能开发使用短期分支，合并前运行 `.\scripts\test.ps1`。
+- 发布版本同时更新根目录 `VERSION`、Python 包版本和 UE 插件 `VersionName`。
+- UE/Python 生成目录、日志、录制文件和本机引擎不会提交。
+- 克隆后先确认 `git lfs install` 和 `git lfs pull` 已完成。
+
+当前基线版本为 `0.2.0`。严格模块适配注册表和完整多相机管理属于下一阶段开发内容。
