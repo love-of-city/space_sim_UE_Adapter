@@ -16,8 +16,14 @@ from .protocol import (
     decode_packet,
     encode_packet,
 )
-from .mjcf_assets import load_asset_catalog, parse_mjcf_geometry_metadata, parse_mjcf_scene_metadata
+from .mjcf_assets import (
+    load_asset_catalog,
+    parse_mjcf_body_parents,
+    parse_mjcf_geometry_metadata,
+    parse_mjcf_scene_metadata,
+)
 from .recording import BskRecordingReader, BskRecordingWriter
+from .stl_conversion import StlConversionResult, convert_stl_to_obj, prepare_stl_for_import, read_stl
 from .ue_support import (
     enable_unreal_visualization,
     enableUnrealVisualization,
@@ -35,15 +41,20 @@ __all__ = [
     "PROTOCOL_V2",
     "RenderPublisher",
     "SceneSettings",
+    "StlConversionResult",
     "VisualElement",
     "__version__",
     "decode_packet",
+    "convert_stl_to_obj",
     "enable_unreal_visualization",
     "enableUnrealVisualization",
     "encode_packet",
     "load_asset_catalog",
     "parse_mjcf_geometry_metadata",
+    "parse_mjcf_body_parents",
     "parse_mjcf_scene_metadata",
+    "prepare_stl_for_import",
+    "read_stl",
     "setActuatorGuiSetting",
     "setInstrumentGuiSetting",
 ]

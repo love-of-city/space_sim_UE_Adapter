@@ -32,6 +32,9 @@
 **/Plugins/*/Intermediate/
 **/Content/Developers/
 **/Content/Collections/
+# Generated from the externally supplied CubeSat + SO-101 STL model.  Rebuild
+# locally with scripts/prepare_spacecraft_arm_assets.ps1.
+**/Content/BSK/Generated/CubeSatSO101/
 *.sln
 *.suo
 *.opensdf

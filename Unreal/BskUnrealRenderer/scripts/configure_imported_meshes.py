@@ -41,6 +41,7 @@ def obj_has_valid_normals(source: str) -> bool:
 subsystem = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
 configured = 0
 recomputed = 0
+validated_stl_triangles = 0
 for source, entry in catalog.get("assets", {}).items():
     asset_path = entry.get("asset_path", "").split(".", 1)[0]
     mesh = unreal.EditorAssetLibrary.load_asset(asset_path)
@@ -53,7 +54,13 @@ for source, entry in catalog.get("assets", {}).items():
         # compatibility library remains available in commandlets and forwards
         # to the same editor implementation without touching private data.
         settings = unreal.EditorStaticMeshLibrary.get_lod_build_settings(mesh, 0)
-    should_recompute = normal_mode == "recompute" or (normal_mode == "auto" and not obj_has_valid_normals(source))
+    # STL sources are deterministically converted to an OBJ staging mesh.  Test
+    # the file actually imported by UE so auto mode can preserve its generated
+    # angle-aware normals instead of treating the source container as opaque.
+    imported_source = entry.get("import_source", source)
+    should_recompute = normal_mode == "recompute" or (
+        normal_mode == "auto" and not obj_has_valid_normals(imported_source)
+    )
     build_scale = entry.get("build_scale", (1.0, 1.0, 1.0))
     if len(build_scale) != 3 or any(float(value) <= 0.0 for value in build_scale):
         raise ValueError(f"invalid build_scale for {source}: {build_scale}")
@@ -99,11 +106,22 @@ for source, entry in catalog.get("assets", {}).items():
         raise RuntimeError(
             f"build scale did not persist for {asset_path}: {actual_scale} != {expected_scale}"
         )
+    stl_metadata = entry.get("stl", {})
+    expected_triangles = stl_metadata.get("triangle_count")
+    if expected_triangles is not None:
+        actual_triangles = mesh.get_num_triangles(0)
+        if actual_triangles != int(expected_triangles):
+            raise RuntimeError(
+                f"STL LOD0 triangle loss for {asset_path}: "
+                f"{actual_triangles} != {expected_triangles}"
+            )
+        validated_stl_triangles += actual_triangles
     configured += 1
     recomputed += int(should_recompute)
 
 unreal.log(
     f"Configured {configured} MJCF meshes using normal_mode={normal_mode}: "
     f"preserved={configured - recomputed}, recomputed={recomputed}; "
+    f"validated_stl_triangles={validated_stl_triangles}; "
     "Nanite=off, LOD0=full, remove_degenerates=false, tangents=MikkTSpace"
 )

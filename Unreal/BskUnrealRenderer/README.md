@@ -1,5 +1,7 @@
 # BskUnrealRenderer
 
+MJCF 的 ASCII/Binary STL 离线导入说明见 [docs/STL_MESHES.md](docs/STL_MESHES.md)。
+
 通用 MJCF mesh 与 UR5e 实时示例见 [docs/MJCF_MESHES.md](docs/MJCF_MESHES.md)。
 
 UE 5.6 运行时航天可视化端。Basilisk 和可选 MJScene 始终负责轨道、姿态、多刚体、接触与控制动力学；UE 只负责画面、相机、资产、特效和任务 UI。

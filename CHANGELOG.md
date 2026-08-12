@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 支持 MJCF 引用的 ASCII/Binary STL：确定性缓存转换、完整 LOD0、源指纹重导入、角度感知法线和基础 UV。
+- MJCF 元数据遍历支持 `<frame>` 安装层级，可发现 MjSpec 组合模型中的嵌套 mesh。
+- 增加自由漂浮 CubeSat + SO-101 一键实时示例，并支持在高频动力学任务中约 30 Hz 限频采样。
+- 增加原生 SO-101 PID/纯接触抓取的 UE 实时包装，并规避 Windows Python MuJoCo/Basilisk MuJoCo DLL 预加载冲突。
 - UR5e 示例改为六个关节依次平滑转动固定角度并保持，默认每关节 20°。
 - MJCF 动态目标灯设为 Movable，避免每帧 Mobility 警告造成 Game Thread 卡顿。
 

@@ -202,6 +202,18 @@ class ProtocolV2Tests(unittest.TestCase):
         self.assertEqual(frame["sim_time_ns"], "9007199254740993")
         self.assertEqual(frame["objects"][1]["position_m"], [2.0, 0.0, 0.0])
 
+    def test_bridge_can_decimate_a_high_rate_dynamics_task(self):
+        messages = {"hub": messaging.SCStatesMsg(), "panel": messaging.SCStatesMsg()}
+        messages["hub"].write(messaging.SCStatesMsgPayload())
+        messages["panel"].write(messaging.SCStatesMsgPayload())
+        publisher = _Publisher()
+        bridge = BasiliskRenderBridge(publisher=publisher, frame_period_ns=33_333_333)
+        bridge.add_mj_scene(_Scene(messages), namespace="decimated")
+        bridge.Reset(0)
+        for sim_time_ns in (0, 1_000_000, 33_000_000, 34_000_000, 66_000_000, 67_000_000):
+            bridge.UpdateState(sim_time_ns)
+        self.assertEqual([frame["sim_time_ns"] for frame in publisher.frames], ["0", "34000000", "67000000"])
+
     def test_recording_round_trip(self):
         messages = [
             {"protocol": PROTOCOL_V2, "type": "hello", "session_id": "s"},

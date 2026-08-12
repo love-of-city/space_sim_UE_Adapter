@@ -120,9 +120,14 @@ def _compiled_source_mesh_poses(mjcf_path: Path) -> list[tuple[tuple[float, floa
 
     try:
         import mujoco  # type: ignore
-    except ImportError:
+        model_type = mujoco.MjModel
+    except (ImportError, AttributeError):
+        # A Windows Basilisk process may deliberately defer the Python MuJoCo
+        # extension to avoid loading two incompatible MuJoCo DLL builds.  XML
+        # metadata remains usable; only compiler recenter compensation is
+        # unavailable in that process.
         return []
-    model = mujoco.MjModel.from_xml_path(str(mjcf_path.resolve()))
+    model = model_type.from_xml_path(str(mjcf_path.resolve()))
     poses = []
     for geom_index in range(model.ngeom):
         if int(model.geom_bodyid[geom_index]) == 0:
@@ -240,9 +245,8 @@ def parse_mjcf_geometry_metadata(mjcf_path: str | Path) -> list[MjcfGeometryMeta
 
     output: list[MjcfGeometryMetadata] = []
 
-    def walk_body(body: ET.Element) -> None:
-        body_name = body.get("name", "")
-        for child in list(body):
+    def walk_container(container: ET.Element, body_name: str) -> None:
+        for child in list(container):
             if child.tag == "geom":
                 mesh_name = child.get("mesh", "")
                 source, mesh_scale = meshes.get(mesh_name, ("", (1.0, 1.0, 1.0)))
@@ -274,11 +278,17 @@ def parse_mjcf_geometry_metadata(mjcf_path: str | Path) -> list[MjcfGeometryMeta
                     )
                 )
             elif child.tag == "body":
-                walk_body(child)
+                walk_container(child, child.get("name", ""))
+            elif child.tag == "frame":
+                # MjSpec attachment commonly inserts a named frame between a
+                # parent body and a vendored articulated model.  A frame is not
+                # a dynamic body: direct geoms still belong to body_name, while
+                # nested bodies establish their own names.
+                walk_container(child, body_name)
 
     for worldbody in root.findall("./worldbody"):
         for body in worldbody.findall("body"):
-            walk_body(body)
+            walk_container(body, body.get("name", ""))
     compiled_poses = _compiled_source_mesh_poses(Path(mjcf_path))
     if len(compiled_poses) == len(output):
         output = [
@@ -287,6 +297,29 @@ def parse_mjcf_geometry_metadata(mjcf_path: str | Path) -> list[MjcfGeometryMeta
             for index, item in enumerate(output)
         ]
     return output
+
+
+def parse_mjcf_body_parents(mjcf_path: str | Path) -> dict[str, str]:
+    """Return named body parents while treating MJCF frames as transparent."""
+
+    root = _load_expanded(Path(mjcf_path))
+    parents: dict[str, str] = {}
+
+    def walk(container: ET.Element, parent_body: str) -> None:
+        for child in list(container):
+            if child.tag == "body":
+                body_name = child.get("name", "")
+                if body_name:
+                    parents[body_name] = parent_body or "world"
+                    walk(child, body_name)
+                else:
+                    walk(child, parent_body)
+            elif child.tag == "frame":
+                walk(child, parent_body)
+
+    for worldbody in root.findall("./worldbody"):
+        walk(worldbody, "world")
+    return parents
 
 
 def parse_mjcf_scene_metadata(mjcf_path: str | Path, namespace: str = "") -> MjcfSceneMetadata:

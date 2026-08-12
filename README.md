@@ -11,6 +11,8 @@ test/model/arm/universal_robots_ur5e/    BSD-3-Clause UR5e 集成测试资产
 scripts/                                 仓库级统一命令
 ```
 
+MJCF 的 ASCII/Binary STL 资产准备说明见 [STL_MESHES.md](Unreal/BskUnrealRenderer/docs/STL_MESHES.md)。
+
 发送端和接收端属于同一个产品与 Git 版本，但运行在不同进程中。两端通过 `bsk-render/2` 的大端 `uint32` 长度前缀 JSON 通信；动态帧采用最新帧覆盖，不反压 Basilisk。
 
 详细协议和 UE 扩展接口见 [UE 项目说明](Unreal/BskUnrealRenderer/README.md)与 [协议文档](Unreal/BskUnrealRenderer/docs/PROTOCOL.md)。
@@ -46,6 +48,12 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 
 # UR5e/MJScene：六个关节依次平滑转动 20 度并保持
 .\scripts\run_ur5e.ps1 -NormalMode preserve -Duration 22 -SimulationRate 1 -JointAngleDegrees 20
+
+# 外部 CubeSat + SO-101：自动准备 STL 并实时显示自由漂浮多刚体动力学
+.\scripts\run_spacecraft_arm.ps1 -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm -Duration 10 -SimulationRate 1
+
+# 同一模型的原生 PID/纯接触抓取场景
+.\scripts\run_spacecraft_arm_grasp.ps1 -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm -Duration 10 -SimulationRate 1 -KeepRendererOpen
 ```
 
 仓库级脚本只转发参数，原有 `Unreal\BskUnrealRenderer\scripts` 命令仍然可用。

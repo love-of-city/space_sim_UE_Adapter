@@ -18,6 +18,7 @@ from .mjcf_assets import (
     load_asset_catalog,
     load_texture_catalog,
     parse_mjcf_geometry_metadata,
+    parse_mjcf_body_parents,
     parse_mjcf_scene_metadata,
     resolve_asset,
     resolve_texture,
@@ -159,8 +160,11 @@ class BasiliskRenderBridge(_BridgeBase):
         c_l_n: Iterable[Iterable[float]] | None = None,
         publisher: RenderPublisher | Any | None = None,
         recording_path: str | Path | None = None,
+        frame_period_ns: int | None = None,
     ) -> None:
         super().__init__()
+        if frame_period_ns is not None and int(frame_period_ns) <= 0:
+            raise ValueError("frame_period_ns must be positive when provided")
         self.ModelTag = "BasiliskRenderBridge"
         self.session_id = str(uuid.uuid4())
         self.origin_object = origin_object
@@ -178,6 +182,8 @@ class BasiliskRenderBridge(_BridgeBase):
         }
         self._frame_id = 0
         self._manifest_revision = 1
+        self.frame_period_ns = int(frame_period_ns) if frame_period_ns is not None else None
+        self._next_frame_ns = 0
 
     def add_object(
         self,
@@ -251,6 +257,7 @@ class BasiliskRenderBridge(_BridgeBase):
         geometry_by_body: dict[str, list[GeometryVisual]] = {name: [] for name in body_names}
         geom_infos = scene.getGeomInfos()
         source_metadata = parse_mjcf_geometry_metadata(source_path) if source_path else []
+        source_parents = parse_mjcf_body_parents(source_path) if source_path else {}
         catalog = load_asset_catalog(mesh_asset_catalog)
         texture_catalog = load_texture_catalog(mesh_asset_catalog)
         for index in range(len(geom_infos)):
@@ -284,7 +291,13 @@ class BasiliskRenderBridge(_BridgeBase):
                 geometry_by_body[body_name].append(geometry)
         assets = dict(asset_map or {})
         for body_name in body_names:
-            parent_name = str(scene.getBodyParentName(body_name))
+            # Basilisk's SWIG getBodyParentName can access-violate for bodies
+            # attached through an MjSpec <frame>.  Prefer the renderer metadata
+            # source when available and keep the API fallback for source-less
+            # scenes and existing integrations.
+            parent_name = source_parents.get(body_name)
+            if parent_name is None:
+                parent_name = str(scene.getBodyParentName(body_name))
             self.add_object(
                 ids[body_name],
                 scene.getBody(body_name).getOrigin().stateOutMsg,
@@ -530,6 +543,7 @@ class BasiliskRenderBridge(_BridgeBase):
         """Start a new stream session and publish retained scene data."""
 
         self._frame_id = 0
+        self._next_frame_ns = int(CurrentSimNanos)
         self._record_and_retain_static()
 
     def _origin(self, raw_objects: list[dict[str, Any]]) -> np.ndarray:
@@ -546,6 +560,10 @@ class BasiliskRenderBridge(_BridgeBase):
 
     def UpdateState(self, CurrentSimNanos: int) -> None:
         """Sample registered messages and enqueue the newest render frame."""
+
+        current_sim_ns = int(CurrentSimNanos)
+        if self.frame_period_ns is not None and current_sim_ns < self._next_frame_ns:
+            return
 
         raw_objects: list[dict[str, Any]] = []
         for binding in self._objects:
@@ -622,6 +640,10 @@ class BasiliskRenderBridge(_BridgeBase):
         if self.recorder:
             self.recorder.write(message)
         self._frame_id += 1
+        if self.frame_period_ns is not None:
+            elapsed = max(0, current_sim_ns - self._next_frame_ns)
+            periods = elapsed // self.frame_period_ns + 1
+            self._next_frame_ns += periods * self.frame_period_ns
 
     def publish_event(self, event_kind: str, payload: Mapping[str, Any] | None = None) -> bool:
         """Publish one bounded reliable event."""
