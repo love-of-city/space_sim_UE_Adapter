@@ -17,10 +17,14 @@ struct BSKUNREALRUNTIME_API FBskCaptureRequest
     TArray<EBskCaptureChannel> Channels;
     FIntPoint Resolution = FIntPoint(1920, 1080);
     int64 SimulationTimeNanoseconds = 0;
+    int64 SourceWallTimeNanoseconds = 0;
+    int64 FrameId = -1;
     FString OutputDirectory;
+    bool bWriteToDisk = true;
+    bool bSendToNetwork = false;
 };
 
-/** Stable extension point for future RGB, depth, and segmentation producers. */
+/** Runtime capture extension point. Implementations are invoked only on the Game Thread. */
 class BSKUNREALRUNTIME_API IBskCaptureProvider
 {
 public:

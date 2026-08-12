@@ -21,6 +21,7 @@ public:
     virtual bool ConsumeLatest(FBskRenderFrame& OutFrame) override;
     virtual bool ConsumeLatestManifest(FBskSceneManifest& OutManifest) override;
     virtual bool ConsumeEvent(FBskRenderEvent& OutEvent) override;
+    virtual bool SendCommandJson(const FString& CommandJson, FString& OutError) override;
 
     virtual FString GetStatus() const override;
     uint64 GetReceivedFrameCount() const { return ReceivedFrameCount.Load(); }
@@ -47,10 +48,13 @@ private:
     TAtomic<bool> bStopRequested{false};
     TAtomic<uint64> ReceivedFrameCount{0};
     TAtomic<uint64> OverwrittenFrameCount{0};
+    TAtomic<bool> bClientConnected{false};
     mutable FCriticalSection LatestMutex;
     TSharedPtr<FBskRenderFrame, ESPMode::ThreadSafe> LatestFrame;
     TSharedPtr<FBskSceneManifest, ESPMode::ThreadSafe> LatestManifest;
     TArray<FBskRenderEvent> Events;
+    mutable FCriticalSection OutboundMutex;
+    TArray<TArray<uint8>> OutboundPackets;
     mutable FCriticalSection StatusMutex;
     FString Status = TEXT("stopped");
 };

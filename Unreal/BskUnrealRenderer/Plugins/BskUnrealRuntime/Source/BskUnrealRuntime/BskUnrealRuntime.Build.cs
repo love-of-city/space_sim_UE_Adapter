@@ -7,7 +7,7 @@ public class BskUnrealRuntime : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[]
         {
-            "Core", "CoreUObject", "Engine", "InputCore", "Json", "Networking", "Sockets"
+            "Core", "CoreUObject", "Engine", "InputCore", "Json", "Networking", "Sockets", "ImageWrapper", "RenderCore", "RHI"
         });
     }
 }

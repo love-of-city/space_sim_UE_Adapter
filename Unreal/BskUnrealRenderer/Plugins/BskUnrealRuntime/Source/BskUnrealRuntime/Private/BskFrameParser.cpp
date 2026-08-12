@@ -171,6 +171,8 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
         (*Settings)->TryGetNumberField(TEXT("interpolation_delay_ms"), Out.InterpolationDelayMilliseconds);
         (*Settings)->TryGetNumberField(TEXT("max_extrapolation_ms"), Out.MaxExtrapolationMilliseconds);
         (*Settings)->TryGetNumberField(TEXT("default_camera_distance_m"), Out.DefaultCameraDistanceMeters);
+        (*Settings)->TryGetBoolField(TEXT("orbit_lines"), Out.bOrbitLines);
+        (*Settings)->TryGetBoolField(TEXT("trajectory_history"), Out.bTrajectoryHistory);
     }
 
     const TArray<TSharedPtr<FJsonValue>>* Objects = nullptr;
@@ -316,6 +318,7 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
                 return false;
             }
             Object->TryGetStringField(TEXT("parent_id"), Definition.ParentId);
+            Object->TryGetStringField(TEXT("display_name"), Definition.DisplayName);
             ReadVector3(Object, TEXT("position_body_m"), Definition.PositionBodyMeters, false, Error);
             if (!Error.IsEmpty()) return false;
             ReadQuaternion(Object, TEXT("orientation_body_from_camera_wxyz"), Definition.OrientationBodyFromCameraWxyz, false, Error);
@@ -327,7 +330,77 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
                 Definition.Resolution = FIntPoint((*Resolution)[0]->AsNumber(), (*Resolution)[1]->AsNumber());
             }
             Object->TryGetStringField(TEXT("semantic_label"), Definition.SemanticLabel);
+            Object->TryGetBoolField(TEXT("picture_in_picture"), Definition.bPictureInPicture);
+            Object->TryGetNumberField(TEXT("capture_rate_hz"), Definition.CaptureRateHertz);
+            double PictureInPictureSlot = 0.0;
+            if (Object->TryGetNumberField(TEXT("picture_in_picture_slot"), PictureInPictureSlot))
+            {
+                Definition.PictureInPictureSlot = FMath::Max(0, FMath::RoundToInt(PictureInPictureSlot));
+            }
+            const TArray<TSharedPtr<FJsonValue>>* CaptureProducts = nullptr;
+            if (Object->TryGetArrayField(TEXT("capture_products"), CaptureProducts) && CaptureProducts != nullptr)
+            {
+                TSet<FString> SeenProducts;
+                for (const TSharedPtr<FJsonValue>& ProductValue : *CaptureProducts)
+                {
+                    FString Product;
+                    if (!ProductValue.IsValid() || !ProductValue->TryGetString(Product))
+                    {
+                        Error = TEXT("camera capture_products entries must be strings");
+                        return false;
+                    }
+                    Product = Product.TrimStartAndEnd().ToLower();
+                    if (Product != TEXT("rgb") && Product != TEXT("depth") && Product != TEXT("segmentation"))
+                    {
+                        Error = FString::Printf(TEXT("camera '%s' requests unsupported capture product '%s'"), *Definition.CameraId, *Product);
+                        return false;
+                    }
+                    if (!SeenProducts.Contains(Product))
+                    {
+                        SeenProducts.Add(Product);
+                        Definition.CaptureProducts.Add(MoveTemp(Product));
+                    }
+                }
+            }
+            Definition.Resolution.X = FMath::Clamp(Definition.Resolution.X, 64, 4096);
+            Definition.Resolution.Y = FMath::Clamp(Definition.Resolution.Y, 64, 4096);
+            Definition.CaptureRateHertz = FMath::Clamp(Definition.CaptureRateHertz, 1.0, 60.0);
+            if (Definition.DisplayName.IsEmpty()) Definition.DisplayName = Definition.CameraId;
             Out.Cameras.Add(MoveTemp(Definition));
+        }
+    }
+    const TSharedPtr<FJsonObject>* Ui = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* Commands = nullptr;
+    if (Settings != nullptr &&
+        (*Settings)->TryGetObjectField(TEXT("ui"), Ui) && Ui != nullptr &&
+        (*Ui)->TryGetArrayField(TEXT("commands"), Commands) && Commands != nullptr)
+    {
+        TSet<FString> SeenCommands;
+        for (const TSharedPtr<FJsonValue>& Value : *Commands)
+        {
+            const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+            FBskUiCommandDefinition Definition;
+            if (!Object.IsValid() || !Object->TryGetStringField(TEXT("command"), Definition.Command) || Definition.Command.IsEmpty())
+            {
+                Error = TEXT("settings.ui.commands entries require command");
+                return false;
+            }
+            if (SeenCommands.Contains(Definition.Command))
+            {
+                Error = FString::Printf(TEXT("duplicate UI command '%s'"), *Definition.Command);
+                return false;
+            }
+            SeenCommands.Add(Definition.Command);
+            Object->TryGetStringField(TEXT("label"), Definition.Label);
+            Object->TryGetStringField(TEXT("target_id"), Definition.TargetId);
+            Object->TryGetBoolField(TEXT("requires_confirmation"), Definition.bRequiresConfirmation);
+            const TSharedPtr<FJsonObject>* Payload = nullptr;
+            if (Object->TryGetObjectField(TEXT("payload"), Payload) && Payload != nullptr)
+            {
+                FJsonSerializer::Serialize((*Payload).ToSharedRef(), TJsonWriterFactory<>::Create(&Definition.PayloadJson));
+            }
+            if (Definition.Label.IsEmpty()) Definition.Label = Definition.Command;
+            Out.UiCommands.Add(MoveTemp(Definition));
         }
     }
     return true;

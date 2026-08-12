@@ -56,6 +56,37 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 .\scripts\run_spacecraft_arm_grasp.ps1 -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm -Duration 10 -SimulationRate 1 -KeepRendererOpen
 ```
 
+The native grasp command now registers a CubeSat-mounted overview camera and
+the MJCF-defined SO-101 wrist camera. Both appear as live picture-in-picture
+views in UE; press `4` or `5` to hide/show them independently. The default
+capture budget is 480x270 at 15 Hz per view, independent of the 30 Hz dynamics
+state stream.
+
+### Complete Earth-orbit grasp mission
+
+```powershell
+Set-Location E:\mujoco_demo\space_sim_UE_adapter
+.\scripts\run_orbital_grasp.ps1 `
+  -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm `
+  -Duration 34 -SimulationRate 1 -KeepRendererOpen
+```
+
+This demo runs one authoritative Basilisk/MJScene system: a 500 km Earth
+orbit, three native MuJoCo hinge-body reaction wheels driven by Basilisk's
+standard attitude FSW, a visible 0.75 m closed-loop rendezvous, relative
+braking and a two-second station-keeping phase, followed by the original
+SO-101 pure-contact grasp. The approach thrust axis is collinear with the
+bus-mounted docking camera and final grasp point, so the target stays on the
+camera boresight throughout rendezvous. The arm uses a conservative 7 mm
+extended terminal pose, tighter jaw closure, and an approximately 3 cm
+post-capture retraction. The docking and wrist cameras
+are both defined by the generated MJCF/XML and discovered automatically; UE
+renders their live views alongside Earth, maneuver plumes, and wheel telemetry.
+Numerical acceptance data is written to
+`Unreal/BskUnrealRenderer/Saved/orbital_grasp_metrics.json`.
+All authoritative MJScene dynamics and controllers run on one 500 Hz task;
+the UE bridge only decimates that state to a non-authoritative 30 Hz stream.
+
 仓库级脚本只转发参数，原有 `Unreal\BskUnrealRenderer\scripts` 命令仍然可用。
 `scripts` 目录同时提供 `start_renderer.ps1`、`stop_renderer.ps1`、`run_bsk.ps1`、`run_mock.ps1`、`test_demo8.ps1`、`package.ps1` 及 MJCF 资产准备入口。
 

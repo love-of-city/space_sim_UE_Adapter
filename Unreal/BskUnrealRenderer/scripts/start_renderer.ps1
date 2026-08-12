@@ -7,6 +7,14 @@ param(
     [string]$ReplayPath = '',
     [double]$ReplayRate = 1.0,
     [string]$ScreenshotPath = '',
+    [string]$CaptureDirectory = '',
+    [string[]]$CaptureProducts = @(),
+    [ValidateRange(0.0, 60.0)]
+    [double]$CaptureRate = 0.0,
+    [string]$CaptureNetworkHost = '127.0.0.1',
+    [ValidateRange(0, 65535)]
+    [int]$CaptureNetworkPort = 0,
+    [string]$AutoCommand = '',
     [switch]$Foreground
 )
 
@@ -17,12 +25,39 @@ $arguments = @(
     $ProjectFile, '-game', '-windowed', "-ResX=$Width", "-ResY=$Height",
     "-BskListen=$ListenAddress", "-BskPort=$Port", '-log'
 )
+$normalizedCaptureProducts = @()
+foreach ($item in $CaptureProducts) {
+    foreach ($product in ($item -split ',')) {
+        if ($product.Trim()) { $normalizedCaptureProducts += $product.Trim().ToLowerInvariant() }
+    }
+}
+$unsupportedCaptureProducts = @($normalizedCaptureProducts | Where-Object { $_ -notin @('rgb', 'depth', 'segmentation') })
+if ($unsupportedCaptureProducts.Count -gt 0) {
+    throw "Unsupported capture products: $($unsupportedCaptureProducts -join ', ')"
+}
 if ($ReplayPath) {
     $resolvedReplay = [IO.Path]::GetFullPath($ReplayPath)
     $arguments += @("-BskReplay=$resolvedReplay", "-BskReplayRate=$ReplayRate")
 }
 if ($ScreenshotPath) {
     $arguments += "-BskScreenshot=$([IO.Path]::GetFullPath($ScreenshotPath))"
+}
+if ($CaptureDirectory) {
+    $arguments += "-BskCaptureDir=$([IO.Path]::GetFullPath($CaptureDirectory))"
+}
+if ($normalizedCaptureProducts.Count -gt 0) {
+    # Unreal's FParse::Value treats commas as token delimiters. Use '+' on the
+    # command line; the runtime normalizes it back into a product list.
+    $arguments += "-BskCaptureProducts=$($normalizedCaptureProducts -join '+')"
+}
+if ($CaptureRate -gt 0.0) {
+    $arguments += "-BskCaptureRate=$CaptureRate"
+}
+if ($CaptureNetworkPort -gt 0) {
+    $arguments += @("-BskCaptureHost=$CaptureNetworkHost", "-BskCapturePort=$CaptureNetworkPort")
+}
+if ($AutoCommand) {
+    $arguments += "-BskAutoCommand=$AutoCommand"
 }
 if ($Foreground) {
     & $editor @arguments

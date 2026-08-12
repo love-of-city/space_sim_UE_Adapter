@@ -1,5 +1,41 @@
 # BskUnrealRenderer
 
+## Mission UI and bidirectional commands
+
+The runtime HUD now includes connection/simulation status, scene counts,
+picture-in-picture cameras, a bounded event timeline, pending command state,
+and manifest-declared command buttons. The mission panel starts hidden; press
+`M` to show or hide it, and press `Tab` to switch between free
+camera control and clickable mission UI mode.
+
+The ordinary mock demo exposes ping, freeze, and resume controls. The orbital
+grasp demo exposes link/manifest checks plus mission pause, resume, and status,
+and publishes rendezvous, station-keeping, arm-approach, capture, retraction,
+and completion phase events. Commands travel back to the Python adapter on the
+same TCP session and execute only through explicitly registered simulation
+thread handlers.
+
+## Camera data products for OpNav
+
+Capture RGB, metric depth, and instance segmentation for every registered
+camera in the orbital-grasp demo at 2 Hz:
+
+```powershell
+.\scripts\run_orbital_grasp.ps1 -CaptureDirectory .\capture -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -KeepRendererOpen
+```
+
+For separate non-blocking network output, start the receiver first:
+
+```powershell
+.\scripts\receive_camera_products.ps1 -Port 5560 -OutputDirectory .\capture-network
+.\scripts\run_orbital_grasp.ps1 -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -CaptureNetworkPort 5560
+```
+
+Each capture includes BSK simulation/source timestamps, UE capture wall time,
+pinhole intrinsics, local/inertial camera extrinsics, and floating-origin
+metadata. Encodings and the `bsk-capture/1` packet format are documented in
+[docs/PROTOCOL.md](docs/PROTOCOL.md).
+
 MJCF 的 ASCII/Binary STL 离线导入说明见 [docs/STL_MESHES.md](docs/STL_MESHES.md)。
 
 通用 MJCF mesh 与 UR5e 实时示例见 [docs/MJCF_MESHES.md](docs/MJCF_MESHES.md)。

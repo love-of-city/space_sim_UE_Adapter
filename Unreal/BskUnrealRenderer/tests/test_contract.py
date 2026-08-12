@@ -73,6 +73,8 @@ class WireContractTests(unittest.TestCase):
         self.assertIn('ActionName="ToggleCssVisuals"', input_config)
         self.assertIn('ActionName="ToggleGenericSensorVisuals"', input_config)
         self.assertIn('ActionName="ToggleTransceiverVisuals"', input_config)
+        self.assertIn('ActionName="TogglePictureInPictureOne"', input_config)
+        self.assertIn('ActionName="TogglePictureInPictureTwo"', input_config)
 
 
 if __name__ == "__main__":

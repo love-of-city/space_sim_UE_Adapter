@@ -11,7 +11,32 @@ class ADirectionalLight;
 class APostProcessVolume;
 class ASpotLight;
 class ASkyAtmosphere;
+class USceneCaptureComponent2D;
 class UStaticMeshComponent;
+class UTextureRenderTarget2D;
+class IBskCaptureProvider;
+class FBskCaptureNetworkSender;
+class FBskCaptureDiskWriter;
+class FBskBuiltinCaptureProvider;
+struct FBskCaptureRequest;
+
+struct BSKUNREALRUNTIME_API FBskPictureInPictureView
+{
+    FString CameraId;
+    FString DisplayName;
+    int32 Slot = 0;
+    bool bVisible = true;
+    TObjectPtr<UTextureRenderTarget2D> Texture = nullptr;
+};
+
+struct BSKUNREALRUNTIME_API FBskMissionEventView
+{
+    int64 Sequence = 0;
+    FString Kind;
+    FString Severity = TEXT("info");
+    FString Message;
+    int64 SimulationTimeNanoseconds = 0;
+};
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnBskFrameApplied, const FBskRenderFrame&);
 
@@ -47,6 +72,24 @@ public:
     UFUNCTION(BlueprintCallable, Category="BSK Renderer|Camera")
     bool FocusObject(const FString& ObjectId, bool bFollow = false);
 
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Camera")
+    bool TogglePictureInPictureSlot(int32 Slot);
+
+    void GetPictureInPictureViews(TArray<FBskPictureInPictureView>& OutViews) const;
+    void GetMissionEvents(TArray<FBskMissionEventView>& OutEvents) const;
+    void GetUiCommands(TArray<FBskUiCommandDefinition>& OutCommands) const;
+    int32 GetObjectCount() const { return BoundActors.Num(); }
+    int32 GetVisualCount() const { return VisualActors.Num(); }
+    int32 GetCameraCount() const { return CameraActors.Num(); }
+    int32 GetPendingCommandCount() const { return PendingCommandIds.Num(); }
+    FString GetLastCommandStatus() const { return LastCommandStatus; }
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Commands")
+    bool SendUiCommand(const FString& Command, const FString& TargetId, const FString& PayloadJson, FString& OutError);
+
+    UFUNCTION(BlueprintCallable, Category="BSK Renderer|Commands")
+    void ClearMissionEvents();
+
     /** Control renderer-only helpers such as sensor FOV and antenna cones. */
     UFUNCTION(BlueprintCallable, Category="BSK Renderer|Visual Helpers")
     void SetVisualKindVisible(const FString& VisualKind, bool bVisible);
@@ -67,6 +110,7 @@ protected:
     virtual void BeginPlay() override;
 
 private:
+    friend class FBskBuiltinCaptureProvider;
     struct FObjectSpec
     {
         FString AssetType = TEXT("placeholder");
@@ -91,6 +135,11 @@ private:
     AActor* SpawnCelestialBody(const FBskCelestialBodyDefinition& Definition);
     AActor* SpawnVisual(const FBskVisualDefinition& Definition);
     AActor* SpawnCamera(const FBskCameraDefinition& Definition);
+    void ConfigureCamera(AActor* Actor, const FBskCameraDefinition& Definition);
+    void UpdatePictureInPictureCaptures();
+    void UpdateDataProductCaptures();
+    bool CaptureCameraDataProducts(const FBskCaptureRequest& Request, FString& OutError);
+    void ConfigureCaptureOutput();
     void ApplyVisualMountTransform(AActor* Actor, const FBskVisualDefinition& Definition) const;
     void RefreshVisualVisibility(const FString& VisualId);
     void AttachManifestChildren();
@@ -113,6 +162,21 @@ private:
     TMap<FString, bool> VisualDynamicVisibility;
     TMap<FString, bool> VisualKindVisibility;
     TMap<FString, TObjectPtr<AActor>> CameraActors;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<USceneCaptureComponent2D>> CameraCaptureComponents;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraRenderTargets;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<USceneCaptureComponent2D>> CameraDepthCaptureComponents;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraDepthRenderTargets;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<USceneCaptureComponent2D>> CameraSegmentationCaptureComponents;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraSegmentationRenderTargets;
+    TMap<FString, double> CameraNextCaptureSeconds;
+    TMap<FString, double> CameraNextDataCaptureSeconds;
+    TMap<FString, bool> CameraPictureInPictureVisibility;
     TObjectPtr<ADirectionalLight> SunLight;
     TObjectPtr<ADirectionalLight> FillLight;
     TObjectPtr<ASpotLight> Headlight;
@@ -132,6 +196,7 @@ private:
     double ReplayRate = 1.0;
     uint32 MaxPacketBytes = BskProtocol::DefaultMaxPacketBytes;
     bool bAllowExternalAssets = false;
+    bool bShowOrbitLines = true;
     bool bUseOfficialCelestialAssets = true;
     bool bUseEarthSkyAtmosphere = true;
     int32 StarCount = 320;
@@ -158,4 +223,19 @@ private:
     FBskRenderFrame PreviousFrame;
     FBskRenderFrame TargetFrame;
     bool bScreenshotRequested = false;
+    TArray<FBskMissionEventView> MissionEventHistory;
+    TMap<FString, double> PendingCommandIds;
+    int64 CommandSequence = 0;
+    FString LastCommandStatus = TEXT("idle");
+    FString AutoCommand;
+    bool bAutoCommandSent = false;
+    FString CaptureOutputDirectory;
+    FString CaptureNetworkAddress = TEXT("127.0.0.1");
+    int32 CaptureNetworkPort = 0;
+    double CaptureRateOverrideHertz = 0.0;
+    TArray<FString> CaptureProductOverride;
+    int64 CaptureSequence = 0;
+    TSharedPtr<IBskCaptureProvider> BuiltinCaptureProvider;
+    TSharedPtr<FBskCaptureNetworkSender> CaptureNetworkSender;
+    TSharedPtr<FBskCaptureDiskWriter> CaptureDiskWriter;
 };

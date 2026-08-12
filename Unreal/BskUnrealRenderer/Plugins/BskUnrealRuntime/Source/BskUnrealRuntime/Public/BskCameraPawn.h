@@ -43,6 +43,11 @@ private:
     void ToggleCssVisuals();
     void ToggleGenericSensorVisuals();
     void ToggleTransceiverVisuals();
+    void TogglePictureInPictureOne();
+    void TogglePictureInPictureTwo();
+    void ToggleMissionUi();
+    void ToggleMissionUiVisibility();
+    void TogglePictureInPicture(int32 Slot);
     void ToggleVisualKind(const FString& VisualKind);
 
     UPROPERTY(VisibleAnywhere)

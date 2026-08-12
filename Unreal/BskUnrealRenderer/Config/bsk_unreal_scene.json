@@ -8,6 +8,13 @@
     "path": "",
     "rate": 1.0
   },
+  "capture": {
+    "output_directory": "",
+    "network_address": "127.0.0.1",
+    "network_port": 0,
+    "rate_override_hz": 0.0,
+    "products_override": []
+  },
   "assets": {
     "allow_external_files": false
   },

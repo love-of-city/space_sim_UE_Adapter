@@ -49,6 +49,7 @@ class MjcfSceneMetadata:
     headlight_ambient_rgb: tuple[float, float, float] = (0.1, 0.1, 0.1)
     headlight_specular_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0)
     lights: tuple[dict[str, Any], ...] = ()
+    cameras: tuple[dict[str, Any], ...] = ()
 
 
 def _vec3(value: str | None, default: Sequence[float] = (1.0, 1.0, 1.0)) -> tuple[float, float, float]:
@@ -108,6 +109,13 @@ def _quat_multiply(a: Sequence[float], b: Sequence[float]) -> tuple[float, float
         aw * by - ax * bz + ay * bw + az * bx,
         aw * bz + ax * by - ay * bx + az * bw,
     )
+
+
+# MuJoCo cameras look down -Z with +Y up.  The renderer-neutral camera frame
+# looks down +X with +Z up and +Y left.  This proper rotation maps the latter
+# basis into the former without leaking a renderer-specific convention onto
+# the wire.
+_MUJOCO_FROM_RENDER_CAMERA = (0.5, -0.5, 0.5, 0.5)
 
 
 def _rotate(q: Sequence[float], vector: Sequence[float]) -> tuple[float, float, float]:
@@ -323,7 +331,7 @@ def parse_mjcf_body_parents(mjcf_path: str | Path) -> dict[str, str]:
 
 
 def parse_mjcf_scene_metadata(mjcf_path: str | Path, namespace: str = "") -> MjcfSceneMetadata:
-    """Read renderer-only MJCF headlight and light declarations."""
+    """Read renderer-only MJCF headlight, light, and camera declarations."""
 
     root = _load_expanded(Path(mjcf_path))
     visual = root.find("./visual")
@@ -334,6 +342,7 @@ def parse_mjcf_scene_metadata(mjcf_path: str | Path, namespace: str = "") -> Mjc
     specular = _vec3(headlight.get("specular") if headlight is not None else None, (0.0, 0.0, 0.0))
     prefix = namespace.strip().replace("\\", "/").strip("/")
     lights: list[dict[str, Any]] = []
+    cameras: list[dict[str, Any]] = []
 
     def add_light(node: ET.Element, parent_name: str = "") -> None:
         index = len(lights)
@@ -358,20 +367,51 @@ def parse_mjcf_scene_metadata(mjcf_path: str | Path, namespace: str = "") -> Mjc
             },
         })
 
+    def add_camera(node: ET.Element, parent_name: str) -> None:
+        name = node.get("name", f"camera_{len(cameras)}")
+        resolution = tuple(int(value) for value in node.get("resolution", "1920 1080").split())
+        if len(resolution) != 2:
+            resolution = (1920, 1080)
+        field_of_view = node.get("fovy")
+        if field_of_view is not None:
+            field_of_view_rad = float(field_of_view) * 3.141592653589793 / 180.0
+        else:
+            sensor = _vec2(node.get("sensorsize"), (0.00576, 0.00324))
+            focal = _vec2(node.get("focal"), (0.0036, 0.0036))
+            # UE and the wire protocol use horizontal FOV.
+            import math
+            field_of_view_rad = 2.0 * math.atan2(sensor[0], 2.0 * focal[0])
+        source_quat = _quat(node.get("quat"))
+        cameras.append({
+            "camera_id": f"{prefix}/camera/{name}" if prefix else f"camera/{name}",
+            "display_name": name,
+            "parent_id": f"{prefix}/{parent_name}" if prefix and parent_name else parent_name,
+            "position_body_m": _vec3(node.get("pos"), (0.0, 0.0, 0.0)),
+            "orientation_body_from_camera_wxyz": _quat_multiply(
+                source_quat, _MUJOCO_FROM_RENDER_CAMERA
+            ),
+            "field_of_view_rad": field_of_view_rad,
+            "resolution": resolution,
+        })
+
+    def walk_container(container: ET.Element, parent_name: str) -> None:
+        for light in container.findall("light"):
+            add_light(light, parent_name)
+        for camera in container.findall("camera"):
+            add_camera(camera, parent_name)
+        for child in list(container):
+            if child.tag == "body":
+                walk_container(child, child.get("name", "") or parent_name)
+            elif child.tag == "frame":
+                # Frames are renderer-transparent just as they are in the
+                # MJScene body hierarchy adapter.
+                walk_container(child, parent_name)
+
     for worldbody in root.findall("./worldbody"):
-        for light in worldbody.findall("light"):
-            add_light(light)
-
-        def walk_body(body: ET.Element) -> None:
-            body_name = body.get("name", "")
-            for light in body.findall("light"):
-                add_light(light, body_name)
-            for child in body.findall("body"):
-                walk_body(child)
-
-        for body in worldbody.findall("body"):
-            walk_body(body)
-    return MjcfSceneMetadata(headlight_enabled, diffuse, ambient, specular, tuple(lights))
+        walk_container(worldbody, "")
+    return MjcfSceneMetadata(
+        headlight_enabled, diffuse, ambient, specular, tuple(lights), tuple(cameras)
+    )
 
 
 def load_asset_catalog(catalog: str | Path | Mapping[str, Any] | None) -> dict[str, RenderAsset]:

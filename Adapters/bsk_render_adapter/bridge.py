@@ -8,7 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -179,11 +179,24 @@ class BasiliskRenderBridge(_BridgeBase):
         self._ui_settings: dict[str, list[dict[str, Any]]] = {
             "actuators": [],
             "instruments": [],
+            "commands": [],
         }
+        self._command_handlers: dict[str, Callable[[Mapping[str, Any], int], Mapping[str, Any] | None]] = {}
         self._frame_id = 0
         self._manifest_revision = 1
         self.frame_period_ns = int(frame_period_ns) if frame_period_ns is not None else None
         self._next_frame_ns = 0
+        self._event_sequence = 0
+        self.register_command_handler(
+            "renderer.ping",
+            lambda payload, sim_time_ns: {"echo": dict(payload), "sim_time_ns": str(sim_time_ns)},
+            label="Ping BSK link",
+        )
+        self.register_command_handler(
+            "renderer.request_manifest",
+            self._handle_manifest_request,
+            label="Resend scene manifest",
+        )
 
     def add_object(
         self,
@@ -248,6 +261,12 @@ class BasiliskRenderBridge(_BridgeBase):
         source_path: str | Path | None = None,
         mesh_asset_catalog: str | Path | Mapping[str, Any] | None = None,
         semantic_label: str = "spacecraft_part",
+        camera_picture_in_picture: bool = False,
+        camera_capture_rate_hz: float = 15.0,
+        camera_pip_resolution: Sequence[int] = (480, 270),
+        camera_picture_in_picture_start_slot: int = 1,
+        camera_display_names: Mapping[str, str] | None = None,
+        camera_capture_products: Sequence[str] = (),
     ) -> dict[str, str]:
         """Auto-register MJScene bodies, hierarchy, geometry, and state messages."""
 
@@ -328,6 +347,25 @@ class BasiliskRenderBridge(_BridgeBase):
                         properties=light["properties"],
                     )
                 )
+            for slot, camera in enumerate(
+                scene_metadata.cameras, start=max(1, int(camera_picture_in_picture_start_slot))
+            ):
+                resolution = camera_pip_resolution if camera_picture_in_picture else camera["resolution"]
+                camera_payload = {key: value for key, value in camera.items() if key != "resolution"}
+                camera_payload["display_name"] = (camera_display_names or {}).get(
+                    camera["display_name"], camera["display_name"]
+                )
+                self.add_camera(
+                    CameraVisual(
+                        **camera_payload,
+                        resolution=resolution,
+                        semantic_label="mjcf_camera",
+                        picture_in_picture=camera_picture_in_picture,
+                        capture_rate_hz=camera_capture_rate_hz,
+                        picture_in_picture_slot=slot if camera_picture_in_picture else 0,
+                        capture_products=camera_capture_products,
+                    )
+                )
         return ids
 
     def add_celestial_bodies(self, bodies: Iterable[Any]) -> None:
@@ -389,6 +427,25 @@ class BasiliskRenderBridge(_BridgeBase):
         self._add_visual_kind(
             "reaction_wheel",
             reaction_wheel_visuals(visuals_or_effector, _safe_id(parent_id), prefix),
+        )
+
+    def add_mj_reaction_wheels(
+        self,
+        scene: Any,
+        wheel_definitions: Iterable[Mapping[str, Any]],
+        *,
+        parent_id: str,
+        prefix: str | None = None,
+    ) -> None:
+        """Register reaction wheels whose authoritative states are MJ joints."""
+
+        from .device_adapters import mjscene_reaction_wheel_visuals
+
+        self._add_visual_kind(
+            "reaction_wheel",
+            mjscene_reaction_wheel_visuals(
+                scene, wheel_definitions, _safe_id(parent_id), prefix
+            ),
         )
 
     def add_thrusters(
@@ -481,6 +538,89 @@ class BasiliskRenderBridge(_BridgeBase):
         self._ui_settings[category].append(dict(setting))
         self._manifest_revision += 1
 
+    def register_command_handler(
+        self,
+        command: str,
+        handler: Callable[[Mapping[str, Any], int], Mapping[str, Any] | None],
+        *,
+        label: str = "",
+        target_id: str = "",
+        payload: Mapping[str, Any] | None = None,
+        requires_confirmation: bool = False,
+    ) -> None:
+        """Expose one allow-listed UI command and its simulation-thread handler."""
+
+        normalized = command.strip()
+        if not normalized or any(char.isspace() for char in normalized):
+            raise ValueError("command must be a non-empty identifier without whitespace")
+        if normalized in self._command_handlers:
+            raise ValueError(f"duplicate command handler: {normalized}")
+        if not callable(handler):
+            raise TypeError("command handler must be callable")
+        self._command_handlers[normalized] = handler
+        self._ui_settings["commands"].append(
+            {
+                "command": normalized,
+                "label": label or normalized,
+                "target_id": _safe_id(target_id) if target_id else "",
+                "payload": dict(payload or {}),
+                "requires_confirmation": bool(requires_confirmation),
+            }
+        )
+        self._manifest_revision += 1
+
+    def _handle_manifest_request(self, payload: Mapping[str, Any], sim_time_ns: int) -> Mapping[str, Any]:
+        self._record_and_retain_static()
+        return {"manifest_revision": str(self._manifest_revision), "sim_time_ns": str(sim_time_ns)}
+
+    def _dispatch_commands(self, current_sim_ns: int) -> None:
+        consume = getattr(self.publisher, "consume_command", None)
+        if not callable(consume):
+            return
+        for _ in range(16):
+            message = consume()
+            if message is None:
+                break
+            command_id = str(message.get("command_id", ""))
+            command = str(message.get("command", ""))
+            target_id = str(message.get("target_id", ""))
+            payload = message.get("payload", {})
+            status = "accepted"
+            severity = "info"
+            result: Mapping[str, Any] = {}
+            error = ""
+            if message.get("session_id") != self.session_id:
+                status, severity, error = "rejected", "error", "command session does not match the active BSK session"
+            elif not command_id:
+                status, severity, error = "rejected", "error", "command_id is required"
+            elif not isinstance(payload, Mapping):
+                status, severity, error = "rejected", "error", "command payload must be an object"
+            elif command not in self._command_handlers:
+                status, severity, error = "rejected", "error", f"unknown or unregistered command: {command}"
+            else:
+                try:
+                    result = dict(self._command_handlers[command](payload, current_sim_ns) or {})
+                except Exception as exception:  # command failures are reported, never hidden
+                    status, severity, error = "failed", "error", f"{type(exception).__name__}: {exception}"
+            self.publish_event(
+                "command_result",
+                {
+                    "command_id": command_id,
+                    "command": command,
+                    "target_id": target_id,
+                    "status": status,
+                    "severity": severity,
+                    "message": error or f"{command} completed",
+                    "sim_time_ns": str(current_sim_ns),
+                    "result": dict(result),
+                },
+            )
+
+    def process_commands(self, current_sim_ns: int) -> None:
+        """Consume pending UI commands on the caller's simulation thread."""
+
+        self._dispatch_commands(int(current_sim_ns))
+
     def _hello_message(self) -> dict[str, Any]:
         return {
             "protocol": PROTOCOL_V2,
@@ -492,6 +632,8 @@ class BasiliskRenderBridge(_BridgeBase):
                 "recording",
                 "multi_camera",
                 "typed_visual_channels",
+                "camera_data_products",
+                "bidirectional_commands",
             ],
             "required_capabilities": ["scene_manifest"],
             "coordinates": {
@@ -545,6 +687,14 @@ class BasiliskRenderBridge(_BridgeBase):
         self._frame_id = 0
         self._next_frame_ns = int(CurrentSimNanos)
         self._record_and_retain_static()
+        self.publish_event(
+            "session_started",
+            {
+                "severity": "info",
+                "message": "Basilisk render session started",
+                "sim_time_ns": str(int(CurrentSimNanos)),
+            },
+        )
 
     def _origin(self, raw_objects: list[dict[str, Any]]) -> np.ndarray:
         if not raw_objects:
@@ -562,6 +712,7 @@ class BasiliskRenderBridge(_BridgeBase):
         """Sample registered messages and enqueue the newest render frame."""
 
         current_sim_ns = int(CurrentSimNanos)
+        self._dispatch_commands(current_sim_ns)
         if self.frame_period_ns is not None and current_sim_ns < self._next_frame_ns:
             return
 
@@ -648,11 +799,12 @@ class BasiliskRenderBridge(_BridgeBase):
     def publish_event(self, event_kind: str, payload: Mapping[str, Any] | None = None) -> bool:
         """Publish one bounded reliable event."""
 
+        self._event_sequence += 1
         message = {
             "protocol": PROTOCOL_V2,
             "type": "event",
             "session_id": self.session_id,
-            "sequence": str(self._frame_id),
+            "sequence": str(self._event_sequence),
             "event_kind": event_kind,
             "payload": dict(payload or {}),
         }

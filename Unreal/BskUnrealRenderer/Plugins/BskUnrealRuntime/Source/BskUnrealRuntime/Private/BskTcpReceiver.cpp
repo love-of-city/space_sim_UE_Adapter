@@ -54,6 +54,38 @@ void FBskTcpReceiver::Stop()
     bStopRequested.Store(true);
 }
 
+bool FBskTcpReceiver::SendCommandJson(const FString& CommandJson, FString& OutError)
+{
+    if (!bClientConnected.Load())
+    {
+        OutError = TEXT("no live BSK sender is connected");
+        return false;
+    }
+    FTCHARToUTF8 Utf8(*CommandJson);
+    if (Utf8.Length() <= 0 || Utf8.Length() > static_cast<int32>(BskProtocol::DefaultMaxPacketBytes))
+    {
+        OutError = TEXT("command JSON has an invalid encoded size");
+        return false;
+    }
+    TArray<uint8> Packet;
+    Packet.Reserve(Utf8.Length() + 4);
+    const uint32 Length = static_cast<uint32>(Utf8.Length());
+    Packet.Add(static_cast<uint8>((Length >> 24) & 0xff));
+    Packet.Add(static_cast<uint8>((Length >> 16) & 0xff));
+    Packet.Add(static_cast<uint8>((Length >> 8) & 0xff));
+    Packet.Add(static_cast<uint8>(Length & 0xff));
+    Packet.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+    FScopeLock Lock(&OutboundMutex);
+    constexpr int32 MaxPendingCommands = 64;
+    if (OutboundPackets.Num() >= MaxPendingCommands)
+    {
+        OutError = TEXT("outbound command queue is full");
+        return false;
+    }
+    OutboundPackets.Add(MoveTemp(Packet));
+    return true;
+}
+
 FString FBskTcpReceiver::GetStatus() const
 {
     FScopeLock Lock(&StatusMutex);
@@ -146,6 +178,7 @@ bool FBskTcpReceiver::CreateListener()
 
 void FBskTcpReceiver::CloseClient()
 {
+    bClientConnected.Store(false);
     if (ClientSocket != nullptr)
     {
         ClientSocket->Close();
@@ -153,6 +186,10 @@ void FBskTcpReceiver::CloseClient()
         ClientSocket = nullptr;
     }
     Parser.Reset();
+    {
+        FScopeLock Lock(&OutboundMutex);
+        OutboundPackets.Reset();
+    }
 }
 
 void FBskTcpReceiver::CloseSockets()
@@ -175,6 +212,8 @@ uint32 FBskTcpReceiver::Run()
 
     TArray<uint8> ReadBuffer;
     ReadBuffer.SetNumUninitialized(64 * 1024);
+    TArray<uint8> ActiveOutboundPacket;
+    int32 ActiveOutboundOffset = 0;
     while (!bStopRequested.Load())
     {
         if (ClientSocket == nullptr)
@@ -187,6 +226,7 @@ uint32 FBskTcpReceiver::Run()
                 {
                     ClientSocket->SetNonBlocking(true);
                     ClientSocket->SetNoDelay(true);
+                    bClientConnected.Store(true);
                     Parser.Reset();
                     SetStatus(TEXT("client connected"));
                     UE_LOG(LogBskUnreal, Display, TEXT("BSK sender connected"));
@@ -234,6 +274,44 @@ uint32 FBskTcpReceiver::Run()
                     break;
                 default:
                     break;
+                }
+            }
+        }
+
+        if (ClientSocket != nullptr)
+        {
+            if (ActiveOutboundPacket.IsEmpty())
+            {
+                FScopeLock Lock(&OutboundMutex);
+                if (!OutboundPackets.IsEmpty())
+                {
+                    ActiveOutboundPacket = MoveTemp(OutboundPackets[0]);
+                    OutboundPackets.RemoveAt(0, 1, EAllowShrinking::No);
+                    ActiveOutboundOffset = 0;
+                }
+            }
+            if (!ActiveOutboundPacket.IsEmpty() &&
+                ClientSocket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::Zero()))
+            {
+                int32 BytesSent = 0;
+                if (!ClientSocket->Send(
+                    ActiveOutboundPacket.GetData() + ActiveOutboundOffset,
+                    ActiveOutboundPacket.Num() - ActiveOutboundOffset,
+                    BytesSent) || BytesSent <= 0)
+                {
+                    UE_LOG(LogBskUnreal, Warning, TEXT("BSK command channel send failed; closing the client session"));
+                    CloseClient();
+                    ActiveOutboundPacket.Reset();
+                    ActiveOutboundOffset = 0;
+                }
+                else
+                {
+                    ActiveOutboundOffset += BytesSent;
+                    if (ActiveOutboundOffset >= ActiveOutboundPacket.Num())
+                    {
+                        ActiveOutboundPacket.Reset();
+                        ActiveOutboundOffset = 0;
+                    }
                 }
             }
         }

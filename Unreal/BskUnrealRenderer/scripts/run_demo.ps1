@@ -4,6 +4,13 @@ param(
     [double]$Duration = 60.0,
     [int]$Port = 5558,
     [string]$UnrealRoot = '',
+    [string]$CaptureDirectory = '',
+    [string[]]$CaptureProducts = @(),
+    [ValidateRange(0.0, 60.0)]
+    [double]$CaptureRate = 0.0,
+    [ValidateRange(0, 65535)]
+    [int]$CaptureNetworkPort = 0,
+    [string]$AutoCommand = '',
     [switch]$KeepRendererOpen,
     [switch]$Rebuild
 )
@@ -17,7 +24,9 @@ if ($Rebuild -or !(Test-Path -LiteralPath $pluginBinary)) {
     & (Join-Path $PSScriptRoot 'build.ps1') -UnrealRoot $ue
 }
 
-& (Join-Path $PSScriptRoot 'start_renderer.ps1') -UnrealRoot $ue -Port $Port
+& (Join-Path $PSScriptRoot 'start_renderer.ps1') -UnrealRoot $ue -Port $Port `
+    -CaptureDirectory $CaptureDirectory -CaptureProducts $CaptureProducts -CaptureRate $CaptureRate `
+    -CaptureNetworkPort $CaptureNetworkPort -AutoCommand $AutoCommand
 $pidFile = Join-Path $ProjectRoot 'Saved\BskRenderer.pid'
 $rendererPid = [int](Get-Content -Raw -LiteralPath $pidFile)
 

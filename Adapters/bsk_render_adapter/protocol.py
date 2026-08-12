@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
+import select
 import socket
 import struct
 import threading
@@ -50,6 +51,8 @@ class PublisherStats:
     controls_sent: int = 0
     events_dropped: int = 0
     reconnects: int = 0
+    commands_received: int = 0
+    commands_rejected: int = 0
     last_error: str | None = None
 
     @property
@@ -80,6 +83,7 @@ class RenderPublisher:
         port: int = 5558,
         reconnect_period_s: float = 0.5,
         event_queue_size: int = 64,
+        command_queue_size: int = 64,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -87,6 +91,8 @@ class RenderPublisher:
         self.stats = PublisherStats()
         self._latest_frame: queue.Queue[bytes] = queue.Queue(maxsize=1)
         self._events: queue.Queue[bytes] = queue.Queue(maxsize=event_queue_size)
+        self._commands: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=command_queue_size)
+        self._receive_buffer = bytearray()
         self._retained_lock = threading.Lock()
         self._hello: bytes | None = None
         self._manifest: bytes | None = None
@@ -161,6 +167,52 @@ class RenderPublisher:
         if self._thread:
             self._thread.join(timeout_s)
 
+    def consume_command(self) -> dict[str, Any] | None:
+        """Return one UE command for consumption on the simulation thread."""
+
+        try:
+            return self._commands.get_nowait()
+        except queue.Empty:
+            return None
+
+    def _receive_commands(self, connection: socket.socket) -> None:
+        while select.select([connection], [], [], 0.0)[0]:
+            chunk = connection.recv(64 * 1024)
+            if not chunk:
+                raise ConnectionResetError("UE command channel closed")
+            self._receive_buffer.extend(chunk)
+        while len(self._receive_buffer) >= HEADER.size:
+            (length,) = HEADER.unpack_from(self._receive_buffer)
+            if length == 0 or length > MAX_PACKET_BYTES:
+                raise ConnectionError(f"invalid UE command packet length: {length}")
+            packet_end = HEADER.size + length
+            if len(self._receive_buffer) < packet_end:
+                break
+            command = json.loads(bytes(self._receive_buffer[HEADER.size:packet_end]).decode("utf-8"))
+            del self._receive_buffer[:packet_end]
+            if not isinstance(command, dict) or command.get("protocol") != PROTOCOL_V2 or command.get("type") != "command":
+                raise ConnectionError("UE returned a non-command packet on the command channel")
+            try:
+                self._commands.put_nowait(command)
+                self.stats.commands_received += 1
+            except queue.Full:
+                self.stats.commands_rejected += 1
+                rejection = {
+                    "protocol": PROTOCOL_V2,
+                    "type": "event",
+                    "session_id": str(command.get("session_id", "")),
+                    "sequence": "0",
+                    "event_kind": "command_result",
+                    "payload": {
+                        "command_id": str(command.get("command_id", "")),
+                        "command": str(command.get("command", "")),
+                        "status": "rejected",
+                        "severity": "error",
+                        "message": "BSK command queue is full",
+                    },
+                }
+                connection.sendall(encode_packet(rejection))
+
     def _retained_snapshot(self) -> tuple[bytes | None, bytes | None, int]:
         with self._retained_lock:
             return self._hello, self._manifest, self._manifest_generation
@@ -174,6 +226,7 @@ class RenderPublisher:
                 try:
                     connection = socket.create_connection((self.host, self.port), timeout=1.0)
                     connection.settimeout(2.0)
+                    self._receive_buffer.clear()
                     connection_generation = -1
                     self.stats.reconnects += 1
                 except OSError as error:
@@ -181,6 +234,7 @@ class RenderPublisher:
                     self._stop.wait(self.reconnect_period_s)
                     continue
             try:
+                self._receive_commands(connection)
                 hello, manifest, generation = self._retained_snapshot()
                 if connection_generation != generation:
                     if hello is not None:
@@ -214,10 +268,11 @@ class RenderPublisher:
                     connection.sendall(frame)
                     self.stats.frames_sent += 1
                     self.stats.last_error = None
+                    self._receive_commands(connection)
                     continue
                 self._wake.wait(0.05)
                 self._wake.clear()
-            except OSError as error:
+            except (OSError, ConnectionError, ValueError, UnicodeError) as error:
                 self.stats.last_error = str(error)
                 try:
                     connection.close()

@@ -93,12 +93,26 @@ struct BSKUNREALRUNTIME_API FBskVisualDefinition
 struct BSKUNREALRUNTIME_API FBskCameraDefinition
 {
     FString CameraId;
+    FString DisplayName;
     FString ParentId;
     FVector3d PositionBodyMeters = FVector3d::ZeroVector;
     FQuat4d OrientationBodyFromCameraWxyz = FQuat4d::Identity;
     double FieldOfViewRadians = PI / 3.0;
     FIntPoint Resolution = FIntPoint(1920, 1080);
     FString SemanticLabel;
+    bool bPictureInPicture = false;
+    double CaptureRateHertz = 15.0;
+    int32 PictureInPictureSlot = 0;
+    TArray<FString> CaptureProducts;
+};
+
+struct BSKUNREALRUNTIME_API FBskUiCommandDefinition
+{
+    FString Command;
+    FString Label;
+    FString TargetId;
+    FString PayloadJson = TEXT("{}");
+    bool bRequiresConfirmation = false;
 };
 
 struct BSKUNREALRUNTIME_API FBskSceneManifest
@@ -116,10 +130,13 @@ struct BSKUNREALRUNTIME_API FBskSceneManifest
     double InterpolationDelayMilliseconds = 100.0;
     double MaxExtrapolationMilliseconds = 100.0;
     double DefaultCameraDistanceMeters = 25.0;
+    bool bOrbitLines = true;
+    bool bTrajectoryHistory = true;
     TArray<FBskObjectDefinition> Objects;
     TArray<FBskCelestialBodyDefinition> CelestialBodies;
     TArray<FBskVisualDefinition> Visuals;
     TArray<FBskCameraDefinition> Cameras;
+    TArray<FBskUiCommandDefinition> UiCommands;
 };
 
 struct BSKUNREALRUNTIME_API FBskRenderObjectState

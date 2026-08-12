@@ -23,6 +23,12 @@ from .mjcf_assets import (
     parse_mjcf_scene_metadata,
 )
 from .recording import BskRecordingReader, BskRecordingWriter
+from .capture import (
+    CAPTURE_PROTOCOL,
+    decode_capture_payload,
+    receive_capture_packet,
+    save_capture_frame,
+)
 from .stl_conversion import StlConversionResult, convert_stl_to_obj, prepare_stl_for_import, read_stl
 from .ue_support import (
     enable_unreal_visualization,
@@ -36,6 +42,7 @@ __all__ = [
     "BskRecordingReader",
     "BskRecordingWriter",
     "CameraVisual",
+    "CAPTURE_PROTOCOL",
     "CelestialBodyVisual",
     "GeometryVisual",
     "PROTOCOL_V2",
@@ -45,6 +52,7 @@ __all__ = [
     "VisualElement",
     "__version__",
     "decode_packet",
+    "decode_capture_payload",
     "convert_stl_to_obj",
     "enable_unreal_visualization",
     "enableUnrealVisualization",
@@ -55,6 +63,8 @@ __all__ = [
     "parse_mjcf_scene_metadata",
     "prepare_stl_for_import",
     "read_stl",
+    "receive_capture_packet",
+    "save_capture_frame",
     "setActuatorGuiSetting",
     "setInstrumentGuiSetting",
 ]

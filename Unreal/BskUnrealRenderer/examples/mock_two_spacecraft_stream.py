@@ -15,7 +15,7 @@ def hello_message(session_id: str) -> dict:
         "protocol": PROTOCOL_V2,
         "type": "hello",
         "session_id": session_id,
-        "capabilities": ["scene_manifest"],
+        "capabilities": ["scene_manifest", "bidirectional_commands"],
         "required_capabilities": ["scene_manifest"],
         "coordinates": {
             "length_unit": "m",
@@ -61,7 +61,21 @@ def manifest_message(session_id: str) -> dict:
         ],
         "celestial_bodies": [],
         "visuals": [],
-        "cameras": [],
+        "cameras": [
+            {
+                "camera_id": "chaser/opnav_camera",
+                "display_name": "Chaser OpNav Camera",
+                "parent_id": "chaser",
+                "position_body_m": [0.0, -4.0, 2.0],
+                "orientation_body_from_camera_wxyz": [0.7071067811865476, 0.0, 0.0, 0.7071067811865475],
+                "field_of_view_rad": 1.0471975511965976,
+                "resolution": [320, 180],
+                "semantic_label": "opnav_camera",
+                "picture_in_picture": False,
+                "capture_rate_hz": 2.0,
+                "capture_products": [],
+            }
+        ],
         "settings": {
             "origin_object_id": "chaser",
             "skybox": "black",
@@ -69,6 +83,13 @@ def manifest_message(session_id: str) -> dict:
             "default_camera_distance_m": 25.0,
             "interpolation_delay_ms": 100.0,
             "max_extrapolation_ms": 100.0,
+            "ui": {
+                "commands": [
+                    {"command": "renderer.ping", "label": "Ping mock sender", "payload": {}, "requires_confirmation": False},
+                    {"command": "demo.freeze", "label": "Freeze target motion", "payload": {}, "requires_confirmation": False},
+                    {"command": "demo.resume", "label": "Resume target motion", "payload": {}, "requires_confirmation": False},
+                ]
+            },
         },
     }
 
@@ -91,11 +112,53 @@ def main() -> None:
     started = time.monotonic()
     deadline = started
     frame_id = 0
+    event_sequence = 0
+    motion_frozen = False
+    motion_time = 0.0
+    previous_wall_time = started
     try:
         while time.monotonic() - started < args.duration:
-            sim_time = time.monotonic() - started
-            angle = 0.35 * sim_time
-            range_m = max(2.5, 12.0 - 0.12 * sim_time)
+            now = time.monotonic()
+            sim_time = now - started
+            if not motion_frozen:
+                motion_time += now - previous_wall_time
+            previous_wall_time = now
+            while True:
+                command = publisher.consume_command()
+                if command is None:
+                    break
+                name = str(command.get("command", ""))
+                status = "accepted"
+                message = f"{name} completed"
+                if command.get("session_id") != session_id:
+                    status, message = "rejected", "command session mismatch"
+                elif name == "demo.freeze":
+                    motion_frozen = True
+                elif name == "demo.resume":
+                    motion_frozen = False
+                elif name != "renderer.ping":
+                    status, message = "rejected", f"unknown command: {name}"
+                event_sequence += 1
+                publisher.publish_event(
+                    {
+                        "protocol": PROTOCOL_V2,
+                        "type": "event",
+                        "session_id": session_id,
+                        "sequence": str(event_sequence),
+                        "event_kind": "command_result",
+                        "payload": {
+                            "command_id": str(command.get("command_id", "")),
+                            "command": name,
+                            "status": status,
+                            "severity": "info" if status == "accepted" else "error",
+                            "message": message,
+                            "sim_time_ns": str(int(sim_time * 1e9)),
+                            "result": {"motion_frozen": motion_frozen},
+                        },
+                    }
+                )
+            angle = 0.35 * motion_time
+            range_m = max(2.5, 12.0 - 0.12 * motion_time)
             objects = [
                 {
                     "object_id": "chaser",
@@ -106,10 +169,10 @@ def main() -> None:
                 },
                 {
                     "object_id": "target",
-                    "position_m": [0.8 * math.sin(0.2 * sim_time), range_m, 0.5 * math.cos(0.2 * sim_time)],
+                    "position_m": [0.8 * math.sin(0.2 * motion_time), range_m, 0.5 * math.cos(0.2 * motion_time)],
                     "orientation_wxyz": [math.cos(angle / 2.0), 0.0, 0.0, math.sin(angle / 2.0)],
-                    "velocity_mps": [0.16 * math.cos(0.2 * sim_time), -0.12, -0.1 * math.sin(0.2 * sim_time)],
-                    "angular_velocity_B_radps": [0.0, 0.0, 0.35],
+                    "velocity_mps": [0.0, 0.0, 0.0] if motion_frozen else [0.16 * math.cos(0.2 * motion_time), -0.12, -0.1 * math.sin(0.2 * motion_time)],
+                    "angular_velocity_B_radps": [0.0, 0.0, 0.0 if motion_frozen else 0.35],
                 },
             ]
             publisher.publish_frame(

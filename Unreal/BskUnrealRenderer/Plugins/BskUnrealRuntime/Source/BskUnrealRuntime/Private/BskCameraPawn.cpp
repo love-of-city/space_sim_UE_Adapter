@@ -1,6 +1,7 @@
 #include "BskCameraPawn.h"
 
 #include "BskSceneController.h"
+#include "BskRendererHUD.h"
 #include "Camera/CameraComponent.h"
 #include "Components/InputComponent.h"
 #include "GameFramework/FloatingPawnMovement.h"
@@ -70,6 +71,10 @@ void ABskCameraPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputCompo
     PlayerInputComponent->BindAction(TEXT("ToggleCssVisuals"), IE_Pressed, this, &ABskCameraPawn::ToggleCssVisuals);
     PlayerInputComponent->BindAction(TEXT("ToggleGenericSensorVisuals"), IE_Pressed, this, &ABskCameraPawn::ToggleGenericSensorVisuals);
     PlayerInputComponent->BindAction(TEXT("ToggleTransceiverVisuals"), IE_Pressed, this, &ABskCameraPawn::ToggleTransceiverVisuals);
+    PlayerInputComponent->BindAction(TEXT("TogglePictureInPictureOne"), IE_Pressed, this, &ABskCameraPawn::TogglePictureInPictureOne);
+    PlayerInputComponent->BindAction(TEXT("TogglePictureInPictureTwo"), IE_Pressed, this, &ABskCameraPawn::TogglePictureInPictureTwo);
+    PlayerInputComponent->BindAction(TEXT("ToggleMissionUi"), IE_Pressed, this, &ABskCameraPawn::ToggleMissionUi);
+    PlayerInputComponent->BindAction(TEXT("ToggleMissionUiVisibility"), IE_Pressed, this, &ABskCameraPawn::ToggleMissionUiVisibility);
 }
 
 void ABskCameraPawn::MoveForward(float Value)
@@ -103,3 +108,32 @@ void ABskCameraPawn::ToggleVisualKind(const FString& VisualKind)
 void ABskCameraPawn::ToggleCssVisuals() { ToggleVisualKind(TEXT("css")); }
 void ABskCameraPawn::ToggleGenericSensorVisuals() { ToggleVisualKind(TEXT("generic_sensor")); }
 void ABskCameraPawn::ToggleTransceiverVisuals() { ToggleVisualKind(TEXT("transceiver")); }
+
+void ABskCameraPawn::TogglePictureInPicture(int32 Slot)
+{
+    TArray<AActor*> Controllers;
+    UGameplayStatics::GetAllActorsOfClass(GetWorld(), ABskSceneController::StaticClass(), Controllers);
+    if (!Controllers.IsEmpty())
+    {
+        if (ABskSceneController* Scene = Cast<ABskSceneController>(Controllers[0])) Scene->TogglePictureInPictureSlot(Slot);
+    }
+}
+
+void ABskCameraPawn::TogglePictureInPictureOne() { TogglePictureInPicture(1); }
+void ABskCameraPawn::TogglePictureInPictureTwo() { TogglePictureInPicture(2); }
+
+void ABskCameraPawn::ToggleMissionUi()
+{
+    if (APlayerController* Player = Cast<APlayerController>(Controller))
+    {
+        if (ABskRendererHUD* Hud = Cast<ABskRendererHUD>(Player->GetHUD())) Hud->ToggleInteractiveMissionUi();
+    }
+}
+
+void ABskCameraPawn::ToggleMissionUiVisibility()
+{
+    if (APlayerController* Player = Cast<APlayerController>(Controller))
+    {
+        if (ABskRendererHUD* Hud = Cast<ABskRendererHUD>(Player->GetHUD())) Hud->ToggleMissionUiVisibility();
+    }
+}

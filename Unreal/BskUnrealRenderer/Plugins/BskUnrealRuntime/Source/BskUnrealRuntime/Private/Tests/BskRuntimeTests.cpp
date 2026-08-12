@@ -102,7 +102,7 @@ bool FBskProtocolV2ManifestTest::RunTest(const FString& Parameters)
     FBskRenderMessage Message;
     FString Error;
     const bool bParsed = FBskFrameParser::ParseMessageJson(
-        TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"session_id\":\"session-a\",\"revision\":\"9007199254740993\",\"objects\":[{\"object_id\":\"primary/hub\",\"display_name\":\"hub\",\"parent_id\":\"\",\"transform_space\":\"world\",\"geometries\":[{\"geometry_id\":\"primary/hub/geom/0\",\"shape\":\"mesh\",\"dimensions_m\":[1,1,1],\"position_body_m\":[0,0,0],\"orientation_body_from_geometry_wxyz\":[1,0,0,0],\"color_rgba\":[1,0,0,0.5],\"asset_type\":\"static_mesh\",\"asset_path\":\"/Game/BSK/Generated/UR5e/base_0.base_0\",\"scale\":[100,100,100],\"render_role\":\"visual\",\"asset_key\":\"base_0.obj\",\"material_name\":\"black\",\"material_specular\":0.6,\"material_shininess\":0.3,\"material_reflectance\":0.1,\"material_emission\":0.0,\"material_texture_repeat\":[2,3]}]}],\"celestial_bodies\":[],\"visuals\":[],\"cameras\":[],\"settings\":{\"origin_object_id\":\"primary/hub\",\"default_camera_distance_m\":2.6}}"),
+        TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"session_id\":\"session-a\",\"revision\":\"9007199254740993\",\"objects\":[{\"object_id\":\"primary/hub\",\"display_name\":\"hub\",\"parent_id\":\"\",\"transform_space\":\"world\",\"geometries\":[{\"geometry_id\":\"primary/hub/geom/0\",\"shape\":\"mesh\",\"dimensions_m\":[1,1,1],\"position_body_m\":[0,0,0],\"orientation_body_from_geometry_wxyz\":[1,0,0,0],\"color_rgba\":[1,0,0,0.5],\"asset_type\":\"static_mesh\",\"asset_path\":\"/Game/BSK/Generated/UR5e/base_0.base_0\",\"scale\":[100,100,100],\"render_role\":\"visual\",\"asset_key\":\"base_0.obj\",\"material_name\":\"black\",\"material_specular\":0.6,\"material_shininess\":0.3,\"material_reflectance\":0.1,\"material_emission\":0.0,\"material_texture_repeat\":[2,3]}]}],\"celestial_bodies\":[],\"visuals\":[],\"cameras\":[],\"settings\":{\"origin_object_id\":\"primary/hub\",\"default_camera_distance_m\":2.6,\"orbit_lines\":false,\"trajectory_history\":false}}"),
         Message,
         Error);
     TestTrue(*Error, bParsed);
@@ -127,6 +127,8 @@ bool FBskProtocolV2ManifestTest::RunTest(const FString& Parameters)
         }
     }
     TestEqual(TEXT("camera distance"), Message.Manifest.DefaultCameraDistanceMeters, 2.6);
+    TestFalse(TEXT("orbit lines setting"), Message.Manifest.bOrbitLines);
+    TestFalse(TEXT("trajectory history setting"), Message.Manifest.bTrajectoryHistory);
     FBskRenderMessage CameraMessage;
     FString CameraError;
     const bool bCameraParsed = FBskFrameParser::ParseMessageJson(
@@ -142,6 +144,31 @@ bool FBskProtocolV2ManifestTest::RunTest(const FString& Parameters)
     {
         TestEqual(TEXT("light target"), CameraMessage.Manifest.Visuals[0].LightTargetId, FString(TEXT("primary/hub")));
         TestEqual(TEXT("light cutoff"), CameraMessage.Manifest.Visuals[0].LightCutoffDegrees, 45.0);
+    }
+    FBskRenderMessage CaptureCameraMessage;
+    FString CaptureCameraError;
+    const bool bCaptureCameraParsed = FBskFrameParser::ParseMessageJson(
+        TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"session_id\":\"pip\",\"revision\":\"2\",\"objects\":[],\"celestial_bodies\":[],\"visuals\":[],\"cameras\":[{\"camera_id\":\"sat/camera/wrist\",\"display_name\":\"Wrist\",\"parent_id\":\"sat/wrist\",\"position_body_m\":[0,0,0],\"orientation_body_from_camera_wxyz\":[1,0,0,0],\"field_of_view_rad\":1.2,\"resolution\":[480,270],\"picture_in_picture\":true,\"capture_rate_hz\":15,\"picture_in_picture_slot\":2,\"capture_products\":[\"rgb\",\"depth\",\"segmentation\"]}],\"settings\":{\"ui\":{\"commands\":[{\"command\":\"mission.pause\",\"label\":\"Pause\",\"payload\":{\"mode\":\"hold\"},\"requires_confirmation\":true}]}}}"),
+        CaptureCameraMessage,
+        CaptureCameraError);
+    TestTrue(*CaptureCameraError, bCaptureCameraParsed);
+    TestEqual(TEXT("one PIP camera"), CaptureCameraMessage.Manifest.Cameras.Num(), 1);
+    if (CaptureCameraMessage.Manifest.Cameras.Num() == 1)
+    {
+        const FBskCameraDefinition& Camera = CaptureCameraMessage.Manifest.Cameras[0];
+        TestEqual(TEXT("PIP camera display name"), Camera.DisplayName, FString(TEXT("Wrist")));
+        TestTrue(TEXT("PIP camera enabled"), Camera.bPictureInPicture);
+        TestEqual(TEXT("PIP camera resolution"), Camera.Resolution, FIntPoint(480, 270));
+        TestEqual(TEXT("PIP camera capture rate"), Camera.CaptureRateHertz, 15.0);
+        TestEqual(TEXT("PIP camera slot"), Camera.PictureInPictureSlot, 2);
+        TestEqual(TEXT("camera data products"), Camera.CaptureProducts.Num(), 3);
+    }
+    TestEqual(TEXT("one UI command"), CaptureCameraMessage.Manifest.UiCommands.Num(), 1);
+    if (CaptureCameraMessage.Manifest.UiCommands.Num() == 1)
+    {
+        TestEqual(TEXT("UI command name"), CaptureCameraMessage.Manifest.UiCommands[0].Command, FString(TEXT("mission.pause")));
+        TestTrue(TEXT("dangerous command confirmation"), CaptureCameraMessage.Manifest.UiCommands[0].bRequiresConfirmation);
+        TestTrue(TEXT("command payload retained"), CaptureCameraMessage.Manifest.UiCommands[0].PayloadJson.Contains(TEXT("hold")));
     }
     return true;
 }

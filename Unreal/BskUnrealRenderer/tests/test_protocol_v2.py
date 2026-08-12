@@ -1,4 +1,5 @@
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ from bsk_render_adapter import (
     BasiliskRenderBridge,
     BskRecordingReader,
     BskRecordingWriter,
+    CameraVisual,
     VisualElement,
     enableUnrealVisualization,
 )
@@ -19,6 +21,7 @@ from bsk_render_adapter.mjcf_assets import (
     parse_mjcf_scene_metadata,
     resolve_asset,
 )
+from bsk_render_adapter.device_adapters import mjscene_reaction_wheel_visuals
 from Basilisk.architecture import messaging
 
 
@@ -108,6 +111,124 @@ class _Simulation:
 
 
 class ProtocolV2Tests(unittest.TestCase):
+    def test_native_mjscene_reaction_wheel_uses_joint_state(self):
+        position_message = messaging.ScalarJointStateMsg()
+        position_message.write(messaging.ScalarJointStateMsgPayload(state=1.25))
+        rate_message = messaging.ScalarJointStateMsg()
+        rate_message.write(messaging.ScalarJointStateMsgPayload(state=42.0))
+        command_message = messaging.SingleActuatorMsg()
+        command_message.write(messaging.SingleActuatorMsgPayload(input=0.002))
+        joint = SimpleNamespace(stateOutMsg=position_message, stateDotOutMsg=rate_message)
+        body = SimpleNamespace(getScalarJoint=lambda name: joint)
+        scene = SimpleNamespace(getBody=lambda name: body)
+        visuals = mjscene_reaction_wheel_visuals(
+            scene,
+            [{
+                "body_name": "rw_x",
+                "joint_name": "rw_x_spin",
+                "position_body_m": [0.0, 0.1, 0.0],
+                "axis_body": [1.0, 0.0, 0.0],
+                "command_message": command_message,
+                "omega_max_rad_s": 100.0,
+                "torque_max_Nm": 0.003,
+            }],
+            "sat/bus",
+        )
+        self.assertEqual(len(visuals), 1)
+        state = visuals[0].state_provider()
+        self.assertEqual(state["channels"]["angle_rad"], 1.25)
+        self.assertEqual(state["channels"]["omega_rad_s"], 42.0)
+        self.assertEqual(state["channels"]["torque_Nm"], 0.002)
+        self.assertFalse(state["channels"]["saturated"])
+
+    def test_camera_descriptor_and_mjcf_camera_convention(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "camera.xml"
+            source.write_text(
+                '<mujoco><worldbody><body name="mount"><camera name="wrist" '
+                'pos="0 0.055 -0.045" quat="1 0 0 0" resolution="640 360" '
+                'sensorsize="0.00576 0.00324" focal="0.0036 0.0036"/>'
+                '</body></worldbody></mujoco>',
+                encoding="utf-8",
+            )
+            metadata = parse_mjcf_scene_metadata(source, "robot")
+        self.assertEqual(len(metadata.cameras), 1)
+        camera = metadata.cameras[0]
+        self.assertEqual(camera["parent_id"], "robot/mount")
+        self.assertEqual(camera["resolution"], (640, 360))
+        self.assertEqual(camera["orientation_body_from_camera_wxyz"], (0.5, -0.5, 0.5, 0.5))
+        self.assertAlmostEqual(camera["field_of_view_rad"], 2.0 * math.atan2(0.00576, 0.0072))
+
+        publisher = _Publisher()
+        bridge = BasiliskRenderBridge(publisher=publisher)
+        bridge.add_camera(
+            CameraVisual(
+                camera_id="robot/overview",
+                display_name="Overview",
+                picture_in_picture=True,
+                capture_rate_hz=12.0,
+                picture_in_picture_slot=2,
+                capture_products=("rgb", "depth", "segmentation"),
+                resolution=(480, 270),
+            )
+        )
+        bridge.Reset(0)
+        payload = publisher.manifest["cameras"][0]
+        self.assertEqual(payload["display_name"], "Overview")
+        self.assertTrue(payload["picture_in_picture"])
+        self.assertEqual(payload["capture_rate_hz"], 12.0)
+        self.assertEqual(payload["picture_in_picture_slot"], 2)
+        self.assertEqual(payload["capture_products"], ["rgb", "depth", "segmentation"])
+
+        with self.assertRaisesRegex(ValueError, "unsupported camera capture products"):
+            CameraVisual(camera_id="bad", capture_products=("optical_flow",)).to_payload()
+
+    def test_allowlisted_bidirectional_command_runs_on_simulation_thread(self):
+        publisher = _Publisher()
+        commands = []
+        publisher.consume_command = lambda: commands.pop(0) if commands else None
+        bridge = BasiliskRenderBridge(publisher=publisher)
+        observed = []
+        bridge.register_command_handler(
+            "mission.set_mode",
+            lambda payload, sim_time_ns: observed.append((dict(payload), sim_time_ns)) or {"mode": payload["mode"]},
+            label="Set mode",
+            payload={"mode": "hold"},
+            requires_confirmation=True,
+        )
+        bridge.Reset(0)
+        commands.append(
+            {
+                "protocol": PROTOCOL_V2,
+                "type": "command",
+                "session_id": bridge.session_id,
+                "command_id": "ue-1",
+                "command": "mission.set_mode",
+                "target_id": "",
+                "payload": {"mode": "hold"},
+            }
+        )
+        bridge.process_commands(123456789)
+        self.assertEqual(observed, [({"mode": "hold"}, 123456789)])
+        result = publisher.events[-1]
+        self.assertEqual(result["event_kind"], "command_result")
+        self.assertEqual(result["payload"]["status"], "accepted")
+        self.assertEqual(result["payload"]["command_id"], "ue-1")
+        declared = publisher.manifest["settings"]["ui"]["commands"]
+        self.assertTrue(any(item["command"] == "mission.set_mode" for item in declared))
+
+        commands.append({
+            "protocol": PROTOCOL_V2,
+            "type": "command",
+            "session_id": bridge.session_id,
+            "command_id": "ue-2",
+            "command": "mission.unknown",
+            "payload": {},
+        })
+        bridge.process_commands(123456790)
+        self.assertEqual(publisher.events[-1]["payload"]["status"], "rejected")
+        self.assertIn("unknown", publisher.events[-1]["payload"]["message"])
+
     def test_ur5e_mjcf_mesh_catalog(self):
         workspace = Path(__file__).resolve().parents[3]
         mjcf = workspace / "test" / "model" / "arm" / "universal_robots_ur5e" / "scene.xml"

@@ -106,8 +106,17 @@ class CameraVisual:
     field_of_view_rad: float = 1.0471975511965976  # [rad]
     resolution: Sequence[int] = (1920, 1080)
     semantic_label: str = "camera"
+    display_name: str = ""
+    picture_in_picture: bool = False
+    capture_rate_hz: float = 15.0
+    picture_in_picture_slot: int = 0
+    capture_products: Sequence[str] = ()
 
     def to_payload(self) -> dict[str, Any]:
+        products = [str(value).strip().lower() for value in self.capture_products]
+        unknown = sorted(set(products) - {"rgb", "depth", "segmentation"})
+        if unknown:
+            raise ValueError(f"unsupported camera capture products: {', '.join(unknown)}")
         return {
             "camera_id": self.camera_id,
             "parent_id": self.parent_id,
@@ -118,6 +127,11 @@ class CameraVisual:
             "field_of_view_rad": float(self.field_of_view_rad),
             "resolution": [int(value) for value in self.resolution],
             "semantic_label": self.semantic_label,
+            "display_name": self.display_name or self.camera_id,
+            "picture_in_picture": bool(self.picture_in_picture),
+            "capture_rate_hz": float(self.capture_rate_hz),
+            "picture_in_picture_slot": int(self.picture_in_picture_slot),
+            "capture_products": list(dict.fromkeys(products)),
         }
 
 

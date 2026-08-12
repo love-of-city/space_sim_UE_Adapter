@@ -17,6 +17,11 @@ public:
     virtual bool SetPlaybackRate(double Rate) { return false; }
     virtual bool StepOnce() { return false; }
     virtual bool SeekSimulationTime(int64 SimulationTimeNanoseconds) { return false; }
+    virtual bool SendCommandJson(const FString& CommandJson, FString& OutError)
+    {
+        OutError = TEXT("this message source does not support bidirectional commands");
+        return false;
+    }
     virtual FString GetStatus() const = 0;
 };
 

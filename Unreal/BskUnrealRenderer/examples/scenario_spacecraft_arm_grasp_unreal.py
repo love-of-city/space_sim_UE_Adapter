@@ -61,7 +61,7 @@ def run(
     # Import the renderer only after the native scenario established the
     # Windows-safe MuJoCo/Basilisk DLL load order.
     from Basilisk.utilities import macros
-    from bsk_render_adapter import BasiliskRenderBridge, SceneSettings
+    from bsk_render_adapter import BasiliskRenderBridge, CameraVisual, SceneSettings
 
     simulation, scene, dynamics_models, recorders = native._build_simulation()
     # Keep the original Python-owned controller/recorder wrappers alive for the
@@ -74,12 +74,40 @@ def run(
         frame_period_ns=macros.sec2nano(1.0 / 30.0),
     )
     try:
-        bridge.add_mj_scene(
+        body_ids = bridge.add_mj_scene(
             scene,
             namespace="grasp",
             source_path=native.MODEL_PATH,
             mesh_asset_catalog=catalog,
             semantic_label="spacecraft_robot_link",
+            camera_picture_in_picture=True,
+            camera_capture_rate_hz=15.0,
+            camera_pip_resolution=(480, 270),
+            camera_picture_in_picture_start_slot=2,
+            camera_display_names={"so101_wrist_cam": "SO-101 Wrist Camera"},
+        )
+        # Fixed body-mounted overview.  The wire camera basis is +X forward,
+        # +Y left, +Z up; this attitude looks from the CubeSat toward the arm's
+        # grasp workspace while remaining rigidly installed on the bus.
+        bridge.add_camera(
+            CameraVisual(
+                camera_id="grasp/camera/spacecraft_overview",
+                display_name="Spacecraft Overview",
+                parent_id=body_ids["cubesat_bus"],
+                position_body_m=(0.0, -0.22, 0.34),
+                orientation_body_from_camera_wxyz=(
+                    0.9602216126462713,
+                    0.0191150104507704,
+                    -0.0679365250286891,
+                    0.2701734619637677,
+                ),
+                field_of_view_rad=math.radians(70.0),
+                resolution=(480, 270),
+                semantic_label="spacecraft_overview_camera",
+                picture_in_picture=True,
+                capture_rate_hz=15.0,
+                picture_in_picture_slot=1,
+            )
         )
         bridge.set_scene_settings(
             SceneSettings(

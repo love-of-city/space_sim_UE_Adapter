@@ -136,6 +136,92 @@ def reaction_wheel_visuals(effector: Any, parent_id: str, prefix: str | None = N
     return result
 
 
+def mjscene_reaction_wheel_visuals(
+    scene: Any,
+    wheel_definitions: Iterable[dict[str, Any]],
+    parent_id: str,
+    prefix: str | None = None,
+) -> list[VisualElement]:
+    """Describe reaction wheels implemented as native MJScene hinge bodies.
+
+    Each definition requires ``body_name`` and ``joint_name``. Optional fields
+    provide the body-local mount, spin axis, dimensions, limits, label, and the
+    final ``SingleActuatorMsg`` command consumed by the MuJoCo motor. The
+    renderer reads joint position/rate directly; it never integrates a second
+    wheel state.
+    """
+
+    result: list[VisualElement] = []
+    base = prefix or f"{parent_id}/reaction_wheel"
+    for index, raw in enumerate(wheel_definitions):
+        definition = dict(raw)
+        body_name = str(definition["body_name"])
+        joint_name = str(definition["joint_name"])
+        joint = scene.getBody(body_name).getScalarJoint(joint_name)
+        position = _vector3(definition.get("position_body_m", (0.0, 0.0, 0.0)), "position_body_m").tolist()
+        axis = _vector3(definition.get("axis_body", (0.0, 0.0, 1.0)), "axis_body")
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm <= 0.0:
+            raise ValueError("axis_body must be non-zero")
+        axis = (axis / axis_norm).tolist()
+        command_message = definition.get("command_message")
+        omega_max = float(definition.get("omega_max_rad_s", -1.0))
+        torque_max = float(definition.get("torque_max_Nm", -1.0))
+
+        def state_provider(
+            position_message=joint.stateOutMsg,
+            rate_message=joint.stateDotOutMsg,
+            torque_message=command_message,
+            speed_limit=omega_max,
+            command_limit=torque_max,
+        ):
+            position_state = _safe_read(position_message)
+            rate_state = _safe_read(rate_message)
+            torque_state = _safe_read(torque_message) if torque_message is not None else None
+            angle = float(getattr(position_state, "state", 0.0))
+            omega = float(getattr(rate_state, "state", 0.0))
+            torque = float(getattr(torque_state, "input", 0.0))
+            return {
+                "visible": True,
+                "value": omega,
+                "channels": {
+                    "angle_rad": angle,
+                    "omega_rad_s": omega,
+                    "torque_Nm": torque,
+                    "omega_max_rad_s": speed_limit,
+                    "torque_max_Nm": command_limit,
+                    "saturated": speed_limit > 0.0 and abs(omega) >= speed_limit,
+                    "enabled": True,
+                },
+            }
+
+        result.append(
+            VisualElement(
+                visual_id=f"{base}/{index}",
+                kind="reaction_wheel",
+                parent_id=parent_id,
+                position_body_m=position,
+                normal_body=axis,
+                size_m=float(definition.get("diameter_m", 0.05)),
+                range_m=float(definition.get("thickness_m", 0.024)),
+                color_rgba=definition.get("color_rgba", (0.25, 0.55, 1.0, 1.0)),
+                label=str(definition.get("label", body_name)),
+                properties={"device_index": index, "dynamics_source": "mjscene_joint"},
+                channel_schema={
+                    "angle_rad": {"type": "number", "unit": "rad"},
+                    "omega_rad_s": {"type": "number", "unit": "rad/s"},
+                    "torque_Nm": {"type": "number", "unit": "N*m"},
+                    "omega_max_rad_s": {"type": "number", "unit": "rad/s"},
+                    "torque_max_Nm": {"type": "number", "unit": "N*m"},
+                    "saturated": {"type": "boolean"},
+                    "enabled": {"type": "boolean"},
+                },
+                state_provider=state_provider,
+            )
+        )
+    return result
+
+
 def thruster_visuals(
     effectors: Any,
     parent_id: str,
