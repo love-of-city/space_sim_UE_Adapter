@@ -1,46 +1,7 @@
 # BskUnrealRenderer
 
-## Mission UI and bidirectional commands
-
-The runtime HUD now includes connection/simulation status, scene counts,
-picture-in-picture cameras, a bounded event timeline, pending command state,
-and manifest-declared command buttons. The mission panel starts hidden; press
-`M` to show or hide it, and press `Tab` to switch between free
-camera control and clickable mission UI mode.
-
-The ordinary mock demo exposes ping, freeze, and resume controls. The orbital
-grasp demo exposes link/manifest checks plus mission pause, resume, and status,
-and publishes rendezvous, station-keeping, arm-approach, capture, retraction,
-and completion phase events. Commands travel back to the Python adapter on the
-same TCP session and execute only through explicitly registered simulation
-thread handlers.
-
-## Camera data products for OpNav
-
-Capture RGB, metric depth, and instance segmentation for every registered
-camera in the orbital-grasp demo at 2 Hz:
-
-```powershell
-.\scripts\run_orbital_grasp.ps1 -CaptureDirectory .\capture -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -KeepRendererOpen
-```
-
-For separate non-blocking network output, start the receiver first:
-
-```powershell
-.\scripts\receive_camera_products.ps1 -Port 5560 -OutputDirectory .\capture-network
-.\scripts\run_orbital_grasp.ps1 -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -CaptureNetworkPort 5560
-```
-
-Each capture includes BSK simulation/source timestamps, UE capture wall time,
-pinhole intrinsics, local/inertial camera extrinsics, and floating-origin
-metadata. Encodings and the `bsk-capture/1` packet format are documented in
-[docs/PROTOCOL.md](docs/PROTOCOL.md).
-
-MJCF 的 ASCII/Binary STL 离线导入说明见 [docs/STL_MESHES.md](docs/STL_MESHES.md)。
-
-通用 MJCF mesh 与 UR5e 实时示例见 [docs/MJCF_MESHES.md](docs/MJCF_MESHES.md)。
-
-UE 5.6 运行时航天可视化端。Basilisk 和可选 MJScene 始终负责轨道、姿态、多刚体、接触与控制动力学；UE 只负责画面、相机、资产、特效和任务 UI。
+UE 5.6 运行时航天可视化端。Basilisk 和可选 MJScene 始终负责轨道、姿态、
+多刚体、接触与控制动力学；UE 只负责画面、相机、资产、特效、数据采集和任务 UI。
 
 本机验证环境：
 
@@ -48,6 +9,41 @@ UE 5.6 运行时航天可视化端。Basilisk 和可选 MJScene 始终负责轨�
 - Visual Studio 2022、MSVC 14.38、Windows SDK 10.0.22621
 - Conda 环境：`mujoco-dev`
 - RTX 4060 Laptop 8 GB / 16 GB RAM 的中低负载默认设置
+
+## 任务 UI 与双向命令
+
+运行时 HUD 显示连接与仿真状态、场景统计、多相机画中画、有限长度事件时间线、
+待处理命令状态和 manifest 声明的命令按钮。任务面板默认隐藏；按 `M` 显示或
+隐藏面板，按 `Tab` 在自由相机控制与可点击任务 UI 模式之间切换。
+
+普通 mock Demo 提供链路检查、冻结和恢复控制。在轨抓取 Demo 提供链路与
+manifest 检查、任务暂停、继续和状态查询，并发布交会、定点保持、机械臂接近、
+抓取、回撤和完成等阶段事件。命令通过原 TCP 会话回传 Python 适配器，而且只能
+由显式注册的仿真线程处理器执行。
+
+## 面向 OpNav 的相机数据产品
+
+以下命令以 2 Hz 为在轨抓取 Demo 中的每个已注册相机采集 RGB、米制深度和
+实例分割：
+
+```powershell
+.\scripts\run_orbital_grasp.ps1 -CaptureDirectory .\capture -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -KeepRendererOpen
+```
+
+如需使用独立的非阻塞网络输出，请先启动接收端：
+
+```powershell
+.\scripts\receive_camera_products.ps1 -Port 5560 -OutputDirectory .\capture-network
+.\scripts\run_orbital_grasp.ps1 -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -CaptureNetworkPort 5560
+```
+
+每帧采集均包含 BSK 仿真/源端时间戳、UE 采集墙钟时间、针孔相机内参、局部/惯性
+外参和浮动原点元数据。编码方式与 `bsk-capture/1` 数据包格式见
+[协议文档](docs/PROTOCOL.md)。
+
+MJCF 的 ASCII/Binary STL 离线导入说明见 [docs/STL_MESHES.md](docs/STL_MESHES.md)。
+
+通用 MJCF mesh 与 UR5e 实时示例见 [docs/MJCF_MESHES.md](docs/MJCF_MESHES.md)。
 
 ## 直接运行
 
@@ -277,7 +273,11 @@ C_LB   = C_LN C_BN^T
 - 带类型动态通道、RW 绝对角度、推力羽流和 CSS 状态动画
 - 录制回放、暂停/倍速/单步/定位 API
 - 多相机 manifest 和运行时 CameraActor
+- RGB、米制深度与实例分割采集，含时间戳、相机内外参和浮动原点元数据
+- 相机数据产品的磁盘输出及独立 latest-frame TCP 网络输出
 - `IBskCaptureProvider` 扩展接口
-- 基础 HUD、自由/环绕/跟随相机和轨道线
+- Vizard 风格事件时间线、任务状态与基于白名单的双向交互命令
+- 默认隐藏且可按 `M` 显示的任务面板，以及自由/环绕/跟随相机和轨道线
 
-后续实现而非首版功能：RGB/深度/分割产品写出、UDP、二进制编码、严格锁步、完整 Vizard 事件面板和 OpNav 图像闭环。
+尚未完成：OpNav 处理结果回传 BSK 的闭环、异步 GPU Readback、单遍实例分割、
+UDP、二进制编码、严格锁步，以及 Vizard 全部专用模块面板和完整数据图表。

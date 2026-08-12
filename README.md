@@ -56,13 +56,11 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 .\scripts\run_spacecraft_arm_grasp.ps1 -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm -Duration 10 -SimulationRate 1 -KeepRendererOpen
 ```
 
-The native grasp command now registers a CubeSat-mounted overview camera and
-the MJCF-defined SO-101 wrist camera. Both appear as live picture-in-picture
-views in UE; press `4` or `5` to hide/show them independently. The default
-capture budget is 480x270 at 15 Hz per view, independent of the 30 Hz dynamics
-state stream.
+原生抓取命令会注册 CubeSat 机身总览相机和 MJCF 中定义的 SO-101 腕部相机，
+两路画面均以实时画中画显示。按 `4` 或 `5` 可分别显示或隐藏；每路相机默认
+以 480×270、15 Hz 渲染，与约 30 Hz 的动力学状态流相互独立。
 
-### Complete Earth-orbit grasp mission
+### 完整地球轨道抓取任务
 
 ```powershell
 Set-Location E:\mujoco_demo\space_sim_UE_adapter
@@ -71,21 +69,33 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
   -Duration 34 -SimulationRate 1 -KeepRendererOpen
 ```
 
-This demo runs one authoritative Basilisk/MJScene system: a 500 km Earth
-orbit, three native MuJoCo hinge-body reaction wheels driven by Basilisk's
-standard attitude FSW, a visible 0.75 m closed-loop rendezvous, relative
-braking and a two-second station-keeping phase, followed by the original
-SO-101 pure-contact grasp. The approach thrust axis is collinear with the
-bus-mounted docking camera and final grasp point, so the target stays on the
-camera boresight throughout rendezvous. The arm uses a conservative 7 mm
-extended terminal pose, tighter jaw closure, and an approximately 3 cm
-post-capture retraction. The docking and wrist cameras
-are both defined by the generated MJCF/XML and discovered automatically; UE
-renders their live views alongside Earth, maneuver plumes, and wheel telemetry.
-Numerical acceptance data is written to
-`Unreal/BskUnrealRenderer/Saved/orbital_grasp_metrics.json`.
-All authoritative MJScene dynamics and controllers run on one 500 Hz task;
-the UE bridge only decimates that state to a non-authoritative 30 Hz stream.
+该 Demo 只运行一套权威 Basilisk/MJScene 系统：卫星位于 500 km 地球轨道，
+三个 MuJoCo 原生铰接刚体反作用轮由 Basilisk 标准姿态 FSW 驱动；航天器完成
+可见的 0.75 m 闭环接近、相对制动和 2 秒定点保持，随后执行原 SO-101
+纯接触抓取。接近推力轴、机身对接相机和最终抓取点共线，使目标在交会期间
+保持在相机视轴附近。机械臂采用向前延伸约 7 mm 的保守末端姿态、更紧的夹爪
+闭合和抓取后约 3 cm 的回撤。
+
+对接相机和腕部相机均在生成的 MJCF/XML 中定义并由适配器自动发现；UE 同时
+显示相机画面、地球、机动羽流和反作用轮遥测。数值验收数据写入
+`Unreal/BskUnrealRenderer/Saved/orbital_grasp_metrics.json`。所有权威 MJScene
+动力学和控制器统一运行在 500 Hz 任务上，UE 适配器仅将状态降采样为约 30 Hz
+的非权威渲染流。
+
+任务面板默认隐藏：按 `M` 显示或隐藏，按 `Tab` 在自由相机与鼠标交互模式之间
+切换。在轨抓取 Demo 提供暂停、继续和状态查询按钮，并显示交会、定点保持、
+抓取与回撤等任务事件。
+
+相机数据产品可写入磁盘，也可通过独立 TCP 通道按最新帧输出：
+
+```powershell
+# RGB、米制深度和实例分割写入磁盘
+.\scripts\run_orbital_grasp.ps1 -CaptureDirectory .\capture -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -KeepRendererOpen
+
+# 网络输出时先启动接收端
+.\scripts\receive_camera_products.ps1 -Port 5560 -OutputDirectory .\capture-network
+.\scripts\run_orbital_grasp.ps1 -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -CaptureNetworkPort 5560
+```
 
 仓库级脚本只转发参数，原有 `Unreal\BskUnrealRenderer\scripts` 命令仍然可用。
 `scripts` 目录同时提供 `start_renderer.ps1`、`stop_renderer.ps1`、`run_bsk.ps1`、`run_mock.ps1`、`test_demo8.ps1`、`package.ps1` 及 MJCF 资产准备入口。
@@ -114,4 +124,5 @@ from bsk_render_adapter import BasiliskRenderBridge
 - UE/Python 生成目录、日志、录制文件和本机引擎不会提交。
 - 克隆后先确认 `git lfs install` 和 `git lfs pull` 已完成。
 
-当前基线版本为 `0.2.0`。严格模块适配注册表和完整多相机管理属于下一阶段开发内容。
+当前基线版本为 `0.2.0`。现已具备多相机画中画与数据采集、任务事件面板和
+白名单双向命令；OpNav 结果闭环、异步 GPU 读回和更多 BSK 模块专用适配器仍待完善。
