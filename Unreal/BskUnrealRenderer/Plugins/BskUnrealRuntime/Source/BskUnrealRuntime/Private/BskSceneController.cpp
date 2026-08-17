@@ -1,4 +1,5 @@
 #include "BskSceneController.h"
+#include "BskCelestialLighting.h"
 
 #include "BskTcpReceiver.h"
 #include "BskRenderWorldSubsystem.h"
@@ -1179,6 +1180,8 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
     MaxExtrapolationSeconds = FMath::Max(0.0, Manifest.MaxExtrapolationMilliseconds / 1000.0);
     ManifestObjects.Reset();
     ManifestCelestialBodies.Reset();
+    PrimaryDirectionalLightBodyId.Reset();
+    bEphemerisDirectionalLightActive = false;
     ManifestVisuals.Reset();
     ManifestCameras.Reset();
     VisualBaseRotations.Reset();
@@ -1204,10 +1207,32 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
     for (const FBskCelestialBodyDefinition& Definition : Manifest.CelestialBodies)
     {
         ManifestCelestialBodies.Add(Definition.BodyId, Definition);
+        if (Definition.bDrivesDirectionalLight)
+        {
+            if (PrimaryDirectionalLightBodyId.IsEmpty())
+            {
+                PrimaryDirectionalLightBodyId = Definition.BodyId;
+                UE_LOG(LogBskUnreal, Display,
+                    TEXT("Celestial body '%s' will drive the primary directional light from ephemeris frames"),
+                    *Definition.BodyId);
+            }
+            else
+            {
+                UE_LOG(LogBskUnreal, Warning,
+                    TEXT("Ignoring additional primary directional-light body '%s'; '%s' is already selected"),
+                    *Definition.BodyId, *PrimaryDirectionalLightBodyId);
+            }
+        }
         if (!CelestialActors.Contains(Definition.BodyId))
         {
             if (AActor* Actor = SpawnCelestialBody(Definition)) CelestialActors.Add(Definition.BodyId, Actor);
         }
+    }
+    if (PrimaryDirectionalLightBodyId.IsEmpty())
+    {
+        UE_LOG(LogBskUnreal, Warning,
+            TEXT("Manifest has no ephemeris-driven directional light; using configured fallback rotation %s"),
+            *SunRotation.ToCompactString());
     }
     for (const FBskVisualDefinition& Definition : Manifest.Visuals)
     {
@@ -1304,11 +1329,40 @@ void ABskSceneController::ApplyEvent(const FBskRenderEvent& Event)
             if (Event.EventKind == TEXT("command_result"))
             {
                 FString CommandId;
+                FString Command;
                 FString Status;
                 Payload->TryGetStringField(TEXT("command_id"), CommandId);
+                Payload->TryGetStringField(TEXT("command"), Command);
                 Payload->TryGetStringField(TEXT("status"), Status);
                 PendingCommandIds.Remove(CommandId);
                 LastCommandStatus = FString::Printf(TEXT("%s %s"), *Status.ToUpper(), *CommandId);
+
+                // The protocol keeps structured command output in ``result``.  The
+                // original HUD displayed only ``message`` (for example
+                // "mission.status completed"), which described completion of the
+                // query and hid the actual mission phase.  Promote the commonly used
+                // mission status fields to a short, human-readable timeline entry.
+                const TSharedPtr<FJsonObject>* Result = nullptr;
+                if (Status.Equals(TEXT("accepted"), ESearchCase::IgnoreCase)
+                    && Payload->TryGetObjectField(TEXT("result"), Result)
+                    && Result != nullptr && Result->IsValid())
+                {
+                    FString Phase;
+                    bool bPaused = false;
+                    const bool bHasPhase = (*Result)->TryGetStringField(TEXT("phase"), Phase);
+                    const bool bHasPaused = (*Result)->TryGetBoolField(TEXT("paused"), bPaused);
+                    if (bHasPhase || bHasPaused)
+                    {
+                        TArray<FString> Details;
+                        if (bHasPhase) Details.Add(FString::Printf(TEXT("phase=%s"), *Phase));
+                        if (bHasPaused) Details.Add(FString::Printf(TEXT("paused=%s"), bPaused ? TEXT("true") : TEXT("false")));
+                        View.Message = FString::Printf(TEXT("%s: %s"), *Command, *FString::Join(Details, TEXT(", ")));
+                    }
+                    else
+                    {
+                        View.Message = FString::Printf(TEXT("%s accepted"), *Command);
+                    }
+                }
             }
         }
     }
@@ -1579,10 +1633,15 @@ void ABskSceneController::ApplyVisualMountTransform(AActor* Actor, const FBskVis
 
 void ABskSceneController::ConfigureManifestLighting(const FBskSceneManifest& Manifest)
 {
+    bUseManifestSceneLighting = Manifest.bUseSceneLighting;
     const double AmbientPeak = FMath::Max3(Manifest.HeadlightAmbientRgb.X, Manifest.HeadlightAmbientRgb.Y, Manifest.HeadlightAmbientRgb.Z);
     ActiveMaterialAmbient = Manifest.bUseSceneLighting ? 1.8 * AmbientPeak : 0.18;
     if (SunLight) SunLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : static_cast<float>(SunIntensityLux));
-    if (FillLight) FillLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : static_cast<float>(FillLightIntensityLux));
+    const double ManifestFillIntensity = Manifest.FillLightIntensityLux >= 0.0
+        ? Manifest.FillLightIntensityLux
+        : FillLightIntensityLux;
+    if (FillLight) FillLight->GetLightComponent()->SetIntensity(
+        Manifest.bUseSceneLighting ? 0.0f : static_cast<float>(ManifestFillIntensity));
     if (!Manifest.bHeadlightEnabled)
     {
         if (Headlight) Headlight->SetActorHiddenInGame(true);
@@ -2263,27 +2322,46 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
     for (const FBskCelestialBodyState& State : Frame.CelestialBodies)
     {
         AActor* Actor = CelestialActors.FindRef(State.BodyId);
-        if (!Actor) continue;
         const FVector Location(Converter.LocalMetersToUnrealCentimeters(State.PositionMeters));
-        FQuat Rotation(Converter.ActiveLocalWxyzToUnreal(State.OrientationWxyz));
-        if (CelestialBillboardIds.Contains(State.BodyId))
+        if (Actor)
         {
-            FVector ViewLocation = FVector::ZeroVector;
-            FRotator ViewRotation;
-            if (APlayerController* Player = GetWorld()->GetFirstPlayerController()) Player->GetPlayerViewPoint(ViewLocation, ViewRotation);
-            const FVector DirectionToViewer = (ViewLocation - Location).GetSafeNormal();
-            if (!DirectionToViewer.IsNearlyZero()) Rotation = DirectionToViewer.Rotation().Quaternion();
+            FQuat Rotation(Converter.ActiveLocalWxyzToUnreal(State.OrientationWxyz));
+            if (CelestialBillboardIds.Contains(State.BodyId))
+            {
+                FVector ViewLocation = FVector::ZeroVector;
+                FRotator ViewRotation;
+                if (APlayerController* Player = GetWorld()->GetFirstPlayerController()) Player->GetPlayerViewPoint(ViewLocation, ViewRotation);
+                const FVector DirectionToViewer = (ViewLocation - Location).GetSafeNormal();
+                if (!DirectionToViewer.IsNearlyZero()) Rotation = DirectionToViewer.Rotation().Quaternion();
+            }
+            Actor->SetActorLocationAndRotation(Location, Rotation, false, nullptr, ETeleportType::TeleportPhysics);
         }
-        Actor->SetActorLocationAndRotation(Location, Rotation, false, nullptr, ETeleportType::TeleportPhysics);
         if (EarthAtmosphere && State.BodyId.Equals(TEXT("earth"), ESearchCase::IgnoreCase))
         {
             EarthAtmosphere->SetActorLocation(Location, false, nullptr, ETeleportType::TeleportPhysics);
             EarthAtmosphere->SetActorHiddenInGame(false);
         }
-        if (const FBskCelestialBodyDefinition* Definition = ManifestCelestialBodies.Find(State.BodyId); Definition && Definition->bLuminous && SunLight)
+        if (State.BodyId == PrimaryDirectionalLightBodyId && SunLight && !bUseManifestSceneLighting)
         {
-            const FVector DirectionToOrigin = (-Location).GetSafeNormal();
-            if (!DirectionToOrigin.IsNearlyZero()) SunLight->SetActorRotation(DirectionToOrigin.Rotation());
+            const FBskCelestialBodyDefinition* Definition = ManifestCelestialBodies.Find(State.BodyId);
+            const FVector LightRayDirection = BskCelestialLighting::DirectionFromSourceToTarget(Location);
+            if (!LightRayDirection.IsNearlyZero() && Definition)
+            {
+                SunLight->SetActorRotation(LightRayDirection.Rotation());
+                SunLight->GetLightComponent()->SetLightColor(FLinearColor(
+                    static_cast<float>(Definition->LightColorRgb.X),
+                    static_cast<float>(Definition->LightColorRgb.Y),
+                    static_cast<float>(Definition->LightColorRgb.Z)));
+                const double BaseIlluminance = Definition->LightIlluminanceLuxAtReferenceDistance > 0.0
+                    ? Definition->LightIlluminanceLuxAtReferenceDistance
+                    : SunIntensityLux;
+                const double Illuminance = BskCelestialLighting::IlluminanceLux(
+                    BaseIlluminance,
+                    Definition->LightReferenceDistanceMeters,
+                    State.PositionMeters.Length());
+                SunLight->GetLightComponent()->SetIntensity(static_cast<float>(Illuminance));
+                bEphemerisDirectionalLightActive = true;
+            }
         }
     }
 }

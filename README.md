@@ -77,7 +77,9 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 闭合和抓取后约 3 cm 的回撤。
 
 对接相机和腕部相机均在生成的 MJCF/XML 中定义并由适配器自动发现；UE 同时
-显示相机画面、地球、机动羽流和反作用轮遥测。数值验收数据写入
+显示相机画面、地球、机动羽流和反作用轮遥测。Earth/Sun 状态由 Basilisk
+SPICE 星历统一生成，UE 根据逐帧太阳方向驱动平行光并关闭非物理反向补光。
+数值验收数据写入
 `Unreal/BskUnrealRenderer/Saved/orbital_grasp_metrics.json`。所有权威 MJScene
 动力学和控制器统一运行在 500 Hz 任务上，UE 适配器仅将状态降采样为约 30 Hz
 的非权威渲染流。
@@ -85,6 +87,19 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 任务面板默认隐藏：按 `M` 显示或隐藏，按 `Tab` 在自由相机与鼠标交互模式之间
 切换。在轨抓取 Demo 提供暂停、继续和状态查询按钮，并显示交会、定点保持、
 抓取与回撤等任务事件。
+
+在轨抓取也使用通用 `.bskrec` 录制/回放链路。首次运行会先离线计算并录制，
+再由 UE 以指定倍率回放：
+
+```powershell
+.\scripts\run_orbital_grasp.ps1 -RecordingPath .\Saved\Recordings\orbital_grasp.bskrec -PlaybackRate 1 -KeepRendererOpen
+```
+
+之后可跳过 BSK/MJScene 计算，直接复用同一录制：
+
+```powershell
+.\scripts\run_orbital_grasp.ps1 -RecordingPath .\Saved\Recordings\orbital_grasp.bskrec -ReuseRecording -PlaybackRate 1 -KeepRendererOpen
+```
 
 相机数据产品可写入磁盘，也可通过独立 TCP 通道按最新帧输出：
 

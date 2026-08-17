@@ -26,6 +26,11 @@ void ABskRendererHUD::ToggleInteractiveMissionUi()
     bMissionUiInteractive = !bMissionUiInteractive;
     if (!PlayerOwner) return;
     PlayerOwner->bShowMouseCursor = bMissionUiInteractive;
+    // Canvas HUD hit boxes do not receive NotifyHitBoxClick merely because the
+    // cursor is visible. APlayerController click events are disabled by
+    // default, so explicitly enable them only while the mission UI is active.
+    PlayerOwner->bEnableClickEvents = bMissionUiInteractive;
+    PlayerOwner->bEnableMouseOverEvents = bMissionUiInteractive;
     if (bMissionUiInteractive)
     {
         FInputModeGameAndUI Mode;
@@ -56,6 +61,7 @@ void ABskRendererHUD::NotifyHitBoxClick(FName BoxName)
 {
     Super::NotifyHitBoxClick(BoxName);
     if (!bMissionUiInteractive) return;
+    UE_LOG(LogTemp, Verbose, TEXT("BSK mission UI clicked hit box: %s"), *BoxName.ToString());
     ABskSceneController* Scene = FindSceneController();
     if (!Scene) return;
     if (BoxName == TEXT("BskClearEvents"))

@@ -187,6 +187,7 @@ private:
     TMap<FString, FObjectSpec> ObjectSpecs;
     TMap<FString, FBskObjectDefinition> ManifestObjects;
     TMap<FString, FBskCelestialBodyDefinition> ManifestCelestialBodies;
+    FString PrimaryDirectionalLightBodyId;
     TMap<FString, FBskVisualDefinition> ManifestVisuals;
     TMap<FString, FBskCameraDefinition> ManifestCameras;
     FBskCoordinateConverter Converter;
@@ -207,6 +208,8 @@ private:
     double FillLightIntensityLux = 1.5;
     double MaterialExposureBias = 1.0;
     double ActiveMaterialAmbient = 0.18;
+    bool bUseManifestSceneLighting = false;
+    bool bEphemerisDirectionalLightActive = false;
     FRotator SunRotation = FRotator(-25.0, -35.0, 15.0);
     FVector3d CameraPositionMeters = FVector3d(10.0, -16.0, 8.0);
     FVector3d CameraLookAtMeters = FVector3d(0.0, 3.0, 0.0);

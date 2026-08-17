@@ -10,6 +10,7 @@ from bsk_render_adapter import (
     BskRecordingReader,
     BskRecordingWriter,
     CameraVisual,
+    RecordingOnlyPublisher,
     VisualElement,
     enableUnrealVisualization,
 )
@@ -47,6 +48,16 @@ class _Publisher:
 
     def close(self):
         pass
+
+
+class RecordingTransportTests(unittest.TestCase):
+    def test_recording_only_publisher_is_a_public_no_network_sink(self):
+        publisher = RecordingOnlyPublisher()
+        publisher.retain_hello({"type": "hello"})
+        publisher.retain_manifest({"type": "scene_manifest"})
+        publisher.publish_frame({"type": "frame"})
+        self.assertTrue(publisher.publish_event({"type": "event"}))
+        publisher.close()
 
 
 class _Origin:
@@ -111,6 +122,48 @@ class _Simulation:
 
 
 class ProtocolV2Tests(unittest.TestCase):
+    def test_celestial_light_semantics_are_explicit_and_ephemeris_driven(self):
+        sun_state = SimpleNamespace(
+            PositionVector=[149_597_870_693.0, 2.0, 3.0],
+            VelocityVector=[0.0, 29_780.0, 0.0],
+            J20002Pfix=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        )
+        sun = SimpleNamespace(
+            displayName="primary-star",
+            planetName="sun_planet_data",
+            mu=1.32712440018e20,
+            radEquator=695_700_000.0,
+            radiusRatio=1.0,
+            modelDictionaryKey="",
+            planetBodyInMsg=lambda: sun_state,
+        )
+        publisher = _Publisher()
+        bridge = BasiliskRenderBridge(publisher=publisher)
+        bridge.add_celestial_bodies(
+            [sun],
+            visual_overrides={
+                "primary-star": {
+                    "visual_role": "star",
+                    "luminous": True,
+                    "drives_directional_light": True,
+                    "light_color_rgb": [1.0, 0.97, 0.90],
+                    "light_illuminance_lux_at_reference_distance": 8.0,
+                    "light_reference_distance_m": 149_597_870_693.0,
+                }
+            },
+        )
+        bridge.Reset(0)
+        bridge.UpdateState(1_000_000_000)
+
+        definition = publisher.manifest["celestial_bodies"][0]
+        self.assertEqual(definition["visual_role"], "star")
+        self.assertTrue(definition["drives_directional_light"])
+        self.assertEqual(definition["light_color_rgb"], [1.0, 0.97, 0.90])
+        self.assertEqual(
+            publisher.frames[-1]["celestial_bodies"][0]["position_m"],
+            [149_597_870_693.0, 2.0, 3.0],
+        )
+
     def test_native_mjscene_reaction_wheel_uses_joint_state(self):
         position_message = messaging.ScalarJointStateMsg()
         position_message.write(messaging.ScalarJointStateMsgPayload(state=1.25))
@@ -214,8 +267,12 @@ class ProtocolV2Tests(unittest.TestCase):
         self.assertEqual(result["event_kind"], "command_result")
         self.assertEqual(result["payload"]["status"], "accepted")
         self.assertEqual(result["payload"]["command_id"], "ue-1")
+        self.assertEqual(result["payload"]["message"], "mission.set_mode accepted")
+        self.assertEqual(result["payload"]["result"], {"mode": "hold"})
         declared = publisher.manifest["settings"]["ui"]["commands"]
         self.assertTrue(any(item["command"] == "mission.set_mode" for item in declared))
+        self.assertFalse(any(item["command"] == "renderer.ping" for item in declared))
+        self.assertFalse(any(item["command"] == "renderer.request_manifest" for item in declared))
 
         commands.append({
             "protocol": PROTOCOL_V2,

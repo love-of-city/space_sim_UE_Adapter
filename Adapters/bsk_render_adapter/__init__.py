@@ -12,6 +12,7 @@ from .descriptors import (
 )
 from .protocol import (
     PROTOCOL_V2,
+    RecordingOnlyPublisher,
     RenderPublisher,
     decode_packet,
     encode_packet,
@@ -46,6 +47,7 @@ __all__ = [
     "CelestialBodyVisual",
     "GeometryVisual",
     "PROTOCOL_V2",
+    "RecordingOnlyPublisher",
     "RenderPublisher",
     "SceneSettings",
     "StlConversionResult",

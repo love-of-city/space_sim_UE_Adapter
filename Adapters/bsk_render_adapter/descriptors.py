@@ -145,10 +145,17 @@ class CelestialBodyVisual:
     equatorial_radius_m: float
     polar_radius_ratio: float = 1.0
     asset_path: str = ""
+    visual_role: str = "body"
     luminous: bool = False
+    drives_directional_light: bool = False
+    light_color_rgb: Sequence[float] = (1.0, 0.98, 0.92)
+    light_illuminance_lux_at_reference_distance: float = 0.0
+    light_reference_distance_m: float = 149_597_870_693.0
 
     def to_payload(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["light_color_rgb"] = _list(self.light_color_rgb)
+        return payload
 
 
 @dataclass
@@ -169,6 +176,9 @@ class SceneSettings:
     headlight_diffuse_rgb: Sequence[float] = (0.6, 0.6, 0.6)
     headlight_ambient_rgb: Sequence[float] = (0.1, 0.1, 0.1)
     headlight_specular_rgb: Sequence[float] = (0.0, 0.0, 0.0)
+    # Negative keeps the renderer configuration value; zero disables the
+    # non-physical readability fill for ephemeris-lit scenes.
+    fill_light_intensity_lux: float = -1.0
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)

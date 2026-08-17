@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "BskCoordinateConverter.h"
+#include "BskCelestialLighting.h"
 #include "BskFrameParser.h"
 #include "BskRenderExtension.h"
 #include "BskRenderWorldSubsystem.h"
@@ -49,6 +50,52 @@ public:
     int32 CaptureCount = 0;
     bool bShutdown = false;
 };
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskEphemerisLightingTest,
+    "BskUnreal.Celestial.EphemerisLightingDirectionAndDistance",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskEphemerisLightingTest::RunTest(const FString& Parameters)
+{
+    const FVector Source(100.0, -50.0, 25.0);
+    const FVector Expected = (-Source).GetSafeNormal();
+    TestTrue(TEXT("light rays travel from the source toward the local scene"),
+        BskCelestialLighting::DirectionFromSourceToTarget(Source).Equals(Expected, 1.0e-12));
+    TestEqual(TEXT("reference-distance illuminance"),
+        BskCelestialLighting::IlluminanceLux(8.0, 100.0, 100.0), 8.0);
+    TestEqual(TEXT("twice distance gives quarter illuminance"),
+        BskCelestialLighting::IlluminanceLux(8.0, 100.0, 200.0), 2.0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskCelestialLightManifestTest,
+    "BskUnreal.Protocol.CelestialLightManifest",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskCelestialLightManifestTest::RunTest(const FString& Parameters)
+{
+    FBskRenderMessage Message;
+    FString Error;
+    const bool bParsed = FBskFrameParser::ParseMessageJson(
+        TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"session_id\":\"ephemeris\",\"revision\":\"1\",\"objects\":[],\"celestial_bodies\":[{\"body_id\":\"sol\",\"display_name\":\"Primary Star\",\"visual_role\":\"star\",\"luminous\":true,\"drives_directional_light\":true,\"light_color_rgb\":[1,0.97,0.9],\"light_illuminance_lux_at_reference_distance\":8,\"light_reference_distance_m\":149597870693}],\"visuals\":[],\"cameras\":[],\"settings\":{\"fill_light_intensity_lux\":0}}"),
+        Message,
+        Error);
+    TestTrue(*Error, bParsed);
+    TestEqual(TEXT("one celestial body"), Message.Manifest.CelestialBodies.Num(), 1);
+    if (Message.Manifest.CelestialBodies.Num() == 1)
+    {
+        const FBskCelestialBodyDefinition& Star = Message.Manifest.CelestialBodies[0];
+        TestEqual(TEXT("generic ID does not need to be sun"), Star.BodyId, FString(TEXT("sol")));
+        TestEqual(TEXT("explicit star role"), Star.VisualRole, FString(TEXT("star")));
+        TestTrue(TEXT("explicit ephemeris light driver"), Star.bDrivesDirectionalLight);
+        TestTrue(TEXT("light colour retained"), Star.LightColorRgb.Equals(FVector3d(1.0, 0.97, 0.9)));
+        TestEqual(TEXT("reference illuminance"), Star.LightIlluminanceLuxAtReferenceDistance, 8.0);
+    }
+    TestEqual(TEXT("manifest disables readability fill"), Message.Manifest.FillLightIntensityLux, 0.0);
+    return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

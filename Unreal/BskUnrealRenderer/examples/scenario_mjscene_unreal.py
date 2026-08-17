@@ -17,26 +17,10 @@ from pathlib import Path
 
 from bsk_render_adapter import (
     CameraVisual,
+    RecordingOnlyPublisher,
     SceneSettings,
 )
 from bsk_render_adapter import ue_support as ueSupport
-
-
-class _RecordingOnlyPublisher:
-    def retain_hello(self, _message: dict) -> None:
-        pass
-
-    def retain_manifest(self, _message: dict) -> None:
-        pass
-
-    def publish_frame(self, _message: dict) -> None:
-        pass
-
-    def publish_event(self, _message: dict) -> bool:
-        return True
-
-    def close(self) -> None:
-        pass
 
 
 def install_wall_clock_pacing(simulation, simulation_rate: float) -> None:
@@ -113,7 +97,7 @@ def run_demo(
             "recordingPath": output,
         }
         if not live:
-            transport_options["publisher"] = _RecordingOnlyPublisher()
+            transport_options["publisher"] = RecordingOnlyPublisher()
         bridge = ueSupport.enableUnrealVisualization(
             simulation,
             task_name,

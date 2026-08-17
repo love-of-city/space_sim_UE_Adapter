@@ -54,7 +54,12 @@ struct BSKUNREALRUNTIME_API FBskCelestialBodyDefinition
     double EquatorialRadiusMeters = 1.0;
     double PolarRadiusRatio = 1.0;
     FString AssetPath;
+    FString VisualRole = TEXT("body");
     bool bLuminous = false;
+    bool bDrivesDirectionalLight = false;
+    FVector3d LightColorRgb = FVector3d(1.0, 0.98, 0.92);
+    double LightIlluminanceLuxAtReferenceDistance = 0.0;
+    double LightReferenceDistanceMeters = 149597870693.0;
 };
 
 struct BSKUNREALRUNTIME_API FBskChannelDefinition
@@ -127,6 +132,7 @@ struct BSKUNREALRUNTIME_API FBskSceneManifest
     FVector3d HeadlightDiffuseRgb = FVector3d(0.6, 0.6, 0.6);
     FVector3d HeadlightAmbientRgb = FVector3d(0.1, 0.1, 0.1);
     FVector3d HeadlightSpecularRgb = FVector3d::ZeroVector;
+    double FillLightIntensityLux = -1.0;
     double InterpolationDelayMilliseconds = 100.0;
     double MaxExtrapolationMilliseconds = 100.0;
     double DefaultCameraDistanceMeters = 25.0;

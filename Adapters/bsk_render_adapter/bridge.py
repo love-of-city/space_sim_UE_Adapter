@@ -191,11 +191,13 @@ class BasiliskRenderBridge(_BridgeBase):
             "renderer.ping",
             lambda payload, sim_time_ns: {"echo": dict(payload), "sim_time_ns": str(sim_time_ns)},
             label="Ping BSK link",
+            show_in_ui=False,
         )
         self.register_command_handler(
             "renderer.request_manifest",
             self._handle_manifest_request,
             label="Resend scene manifest",
+            show_in_ui=False,
         )
 
     def add_object(
@@ -368,22 +370,58 @@ class BasiliskRenderBridge(_BridgeBase):
                 )
         return ids
 
-    def add_celestial_bodies(self, bodies: Iterable[Any]) -> None:
-        """Register Basilisk gravity bodies and their linked ephemeris readers."""
+    def add_celestial_bodies(
+        self,
+        bodies: Iterable[Any],
+        *,
+        visual_overrides: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Register gravity bodies and renderer-neutral ephemeris visuals.
+
+        ``visual_overrides`` is keyed by stable body ID or display name.  It
+        makes star/light semantics explicit without requiring a renderer to
+        infer physics from a display string.  The legacy ``sun`` name default
+        remains for existing scenarios, but new scenarios should declare it.
+        """
+
+        normalized_overrides = {
+            str(key).casefold(): dict(value)
+            for key, value in (visual_overrides or {}).items()
+        }
+        allowed_overrides = {
+            "asset_path",
+            "visual_role",
+            "luminous",
+            "drives_directional_light",
+            "light_color_rgb",
+            "light_illuminance_lux_at_reference_distance",
+            "light_reference_distance_m",
+        }
 
         for body in bodies:
             display_name = str(getattr(body, "displayName", "") or getattr(body, "planetName", "body"))
             body_id = _safe_id(display_name.casefold())
             if any(binding.visual.body_id == body_id for binding in self._celestial):
                 continue
+            legacy_star = display_name.casefold() == "sun"
+            override = normalized_overrides.get(body_id.casefold(), normalized_overrides.get(display_name.casefold(), {}))
+            unknown = sorted(set(override) - allowed_overrides)
+            if unknown:
+                raise ValueError(f"unsupported celestial visual overrides for {body_id}: {', '.join(unknown)}")
+            visual_values: dict[str, Any] = {
+                "asset_path": str(getattr(body, "modelDictionaryKey", "")),
+                "visual_role": "star" if legacy_star else "body",
+                "luminous": legacy_star,
+                "drives_directional_light": legacy_star,
+                **override,
+            }
             visual = CelestialBodyVisual(
                 body_id=body_id,
                 display_name=display_name,
                 mu_m3_s2=float(body.mu),
                 equatorial_radius_m=float(body.radEquator),
                 polar_radius_ratio=float(getattr(body, "radiusRatio", 1.0)),
-                asset_path=str(getattr(body, "modelDictionaryKey", "")),
-                luminous=display_name.casefold() == "sun",
+                **visual_values,
             )
             self._celestial.append(_CelestialBinding(visual, body.planetBodyInMsg))
         self._manifest_revision += 1
@@ -547,8 +585,9 @@ class BasiliskRenderBridge(_BridgeBase):
         target_id: str = "",
         payload: Mapping[str, Any] | None = None,
         requires_confirmation: bool = False,
+        show_in_ui: bool = True,
     ) -> None:
-        """Expose one allow-listed UI command and its simulation-thread handler."""
+        """Register an allow-listed command and optionally expose it in the task UI."""
 
         normalized = command.strip()
         if not normalized or any(char.isspace() for char in normalized):
@@ -558,15 +597,16 @@ class BasiliskRenderBridge(_BridgeBase):
         if not callable(handler):
             raise TypeError("command handler must be callable")
         self._command_handlers[normalized] = handler
-        self._ui_settings["commands"].append(
-            {
-                "command": normalized,
-                "label": label or normalized,
-                "target_id": _safe_id(target_id) if target_id else "",
-                "payload": dict(payload or {}),
-                "requires_confirmation": bool(requires_confirmation),
-            }
-        )
+        if show_in_ui:
+            self._ui_settings["commands"].append(
+                {
+                    "command": normalized,
+                    "label": label or normalized,
+                    "target_id": _safe_id(target_id) if target_id else "",
+                    "payload": dict(payload or {}),
+                    "requires_confirmation": bool(requires_confirmation),
+                }
+            )
         self._manifest_revision += 1
 
     def _handle_manifest_request(self, payload: Mapping[str, Any], sim_time_ns: int) -> Mapping[str, Any]:
@@ -610,7 +650,10 @@ class BasiliskRenderBridge(_BridgeBase):
                     "target_id": target_id,
                     "status": status,
                     "severity": severity,
-                    "message": error or f"{command} completed",
+                    # ``status`` reports whether the command was accepted, rejected, or
+                    # failed.  Do not use "completed" here: for query commands such as
+                    # mission.status it is easily confused with the mission phase.
+                    "message": error or f"{command} {status}",
                     "sim_time_ns": str(current_sim_ns),
                     "result": dict(result),
                 },

@@ -74,6 +74,31 @@ class PublisherStats:
         return self.frames_dropped
 
 
+class RecordingOnlyPublisher:
+    """Discard live transport output while a bridge writes a ``.bskrec`` file.
+
+    This transport-neutral sink lets any Basilisk scenario use the same bridge
+    and recording code without opening a TCP connection or implementing a
+    demo-specific dummy publisher.  Commands are intentionally unavailable in
+    offline recording mode.
+    """
+
+    def retain_hello(self, _message: dict[str, Any]) -> None:
+        pass
+
+    def retain_manifest(self, _message: dict[str, Any]) -> None:
+        pass
+
+    def publish_frame(self, _message: dict[str, Any]) -> None:
+        pass
+
+    def publish_event(self, _message: dict[str, Any]) -> bool:
+        return True
+
+    def close(self) -> None:
+        pass
+
+
 class RenderPublisher:
     """Publish retained scene data and latest-frame-wins state asynchronously."""
 

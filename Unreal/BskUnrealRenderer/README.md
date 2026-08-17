@@ -16,8 +16,8 @@ UE 5.6 运行时航天可视化端。Basilisk 和可选 MJScene 始终负责轨�
 待处理命令状态和 manifest 声明的命令按钮。任务面板默认隐藏；按 `M` 显示或
 隐藏面板，按 `Tab` 在自由相机控制与可点击任务 UI 模式之间切换。
 
-普通 mock Demo 提供链路检查、冻结和恢复控制。在轨抓取 Demo 提供链路与
-manifest 检查、任务暂停、继续和状态查询，并发布交会、定点保持、机械臂接近、
+普通 mock Demo 提供冻结和恢复控制。在轨抓取 Demo 提供任务暂停、继续和状态查询，
+并发布交会、定点保持、机械臂接近、
 抓取、回撤和完成等阶段事件。命令通过原 TCP 会话回传 Python 适配器，而且只能
 由显式注册的仿真线程处理器执行。
 
@@ -44,6 +44,22 @@ manifest 检查、任务暂停、继续和状态查询，并发布交会、定�
 MJCF 的 ASCII/Binary STL 离线导入说明见 [docs/STL_MESHES.md](docs/STL_MESHES.md)。
 
 通用 MJCF mesh 与 UR5e 实时示例见 [docs/MJCF_MESHES.md](docs/MJCF_MESHES.md)。
+
+## 通用录制与 UE 回放
+
+`BasiliskRenderBridge` 可在任意场景中通过 `recording_path` 同步写出 `.bskrec`；
+离线批量生成时使用公共 `RecordingOnlyPublisher`，无需启动 UE 或打开 TCP。
+在轨抓取首次录制并自动回放：
+
+```powershell
+.\scripts\run_orbital_grasp.ps1 -RecordingPath .\Saved\Recordings\orbital_grasp.bskrec -PlaybackRate 1 -KeepRendererOpen
+```
+
+复用录制并直接在 UE 中回放：
+
+```powershell
+.\scripts\run_orbital_grasp.ps1 -RecordingPath .\Saved\Recordings\orbital_grasp.bskrec -ReuseRecording -PlaybackRate 1 -KeepRendererOpen
+```
 
 ## 直接运行
 

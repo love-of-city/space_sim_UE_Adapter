@@ -110,7 +110,18 @@ and the headlight diffuse/ambient/specular RGB triples.
       "color_rgba": [0.0, 1.0, 0.0, 1.0]
     }]
   }],
-  "celestial_bodies": [],
+  "celestial_bodies": [{
+    "body_id": "sun",
+    "display_name": "Sun",
+    "mu_m3_s2": 1.32712440018e20,
+    "equatorial_radius_m": 695700000.0,
+    "visual_role": "star",
+    "luminous": true,
+    "drives_directional_light": true,
+    "light_color_rgb": [1.0, 0.98, 0.92],
+    "light_illuminance_lux_at_reference_distance": 8.0,
+    "light_reference_distance_m": 149597870693.0
+  }],
   "visuals": [{
     "visual_id": "primary/reaction_wheel/0",
     "kind": "reaction_wheel",
@@ -147,6 +158,14 @@ the related rate/slot fields are optional renderer hints; omitting them keeps
 the camera registered without adding an on-screen view. UE clamps capture
 resolution and rate to bounded runtime limits.
 
+Celestial positions in each frame are authoritative ephemeris states in the
+same local render frame as ordinary objects. `drives_directional_light`
+explicitly selects the primary star; UE points the light rays from that body
+toward the local origin and applies inverse-square distance scaling. The
+illuminance value is a renderer exposure setting, not a second ephemeris or
+dynamics model. `settings.fill_light_intensity_lux: 0` disables readability
+fill so the anti-solar side remains dark.
+
 `capture_products` is strict: the only version-2 values are `rgb`, `depth`,
 and `segmentation`; an unknown value rejects the manifest with a clear error.
 The sender requests products, while the UE host retains authority over local
@@ -179,7 +198,11 @@ not integrate or command a second wheel model.
     "velocity_mps": [0.0, 0.0, 0.0],
     "angular_velocity_B_radps": [0.0, 0.0, 0.05]
   }],
-  "celestial_bodies": [],
+  "celestial_bodies": [{
+    "body_id": "sun",
+    "position_m": [-8.90167799e10, -1.08454484e11, -4.70126925e10],
+    "orientation_wxyz": [1.0, 0.0, 0.0, 0.0]
+  }],
   "visual_states": [{
     "visual_id": "primary/reaction_wheel/0",
     "visible": true,

@@ -168,6 +168,7 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
         if (!Error.IsEmpty()) return false;
         ReadVector3(*Settings, TEXT("headlight_specular_rgb"), Out.HeadlightSpecularRgb, false, Error);
         if (!Error.IsEmpty()) return false;
+        (*Settings)->TryGetNumberField(TEXT("fill_light_intensity_lux"), Out.FillLightIntensityLux);
         (*Settings)->TryGetNumberField(TEXT("interpolation_delay_ms"), Out.InterpolationDelayMilliseconds);
         (*Settings)->TryGetNumberField(TEXT("max_extrapolation_ms"), Out.MaxExtrapolationMilliseconds);
         (*Settings)->TryGetNumberField(TEXT("default_camera_distance_m"), Out.DefaultCameraDistanceMeters);
@@ -232,7 +233,20 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
             Object->TryGetNumberField(TEXT("equatorial_radius_m"), Definition.EquatorialRadiusMeters);
             Object->TryGetNumberField(TEXT("polar_radius_ratio"), Definition.PolarRadiusRatio);
             Object->TryGetStringField(TEXT("asset_path"), Definition.AssetPath);
+            Object->TryGetStringField(TEXT("visual_role"), Definition.VisualRole);
             Object->TryGetBoolField(TEXT("luminous"), Definition.bLuminous);
+            if (!Object->TryGetBoolField(TEXT("drives_directional_light"), Definition.bDrivesDirectionalLight))
+            {
+                // bsk-render/2 manifests produced before explicit light roles
+                // used luminous=true for the primary star.
+                Definition.bDrivesDirectionalLight = Definition.bLuminous;
+            }
+            ReadVector3(Object, TEXT("light_color_rgb"), Definition.LightColorRgb, false, Error);
+            if (!Error.IsEmpty()) return false;
+            Object->TryGetNumberField(
+                TEXT("light_illuminance_lux_at_reference_distance"),
+                Definition.LightIlluminanceLuxAtReferenceDistance);
+            Object->TryGetNumberField(TEXT("light_reference_distance_m"), Definition.LightReferenceDistanceMeters);
             Out.CelestialBodies.Add(MoveTemp(Definition));
         }
     }

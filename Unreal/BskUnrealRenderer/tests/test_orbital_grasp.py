@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,31 @@ def _load_scenario():
 
 
 class OrbitalGraspContractTests(unittest.TestCase):
+    def test_run_exposes_generic_recording_mode(self):
+        scenario = _load_scenario()
+        parameters = inspect.signature(scenario.run).parameters
+        self.assertIn("recording_path", parameters)
+        self.assertIn("recording_only", parameters)
+        self.assertIsNone(parameters["recording_path"].default)
+        self.assertFalse(parameters["recording_only"].default)
+
+        launcher = (PROJECT_ROOT / "scripts" / "run_orbital_grasp.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("[string]$RecordingPath", launcher)
+        self.assertIn("[double]$PlaybackRate", launcher)
+        self.assertIn("[switch]$ReuseRecording", launcher)
+        self.assertIn("--recording $resolvedRecordingPath --record-only", launcher)
+        self.assertIn("-ReplayPath $resolvedRecordingPath", launcher)
+
+    def test_orbital_scene_uses_basilisk_sun_ephemeris_for_ue_lighting(self):
+        source = SCENARIO_PATH.read_text(encoding="utf-8")
+        self.assertIn("gravity_factory.createSun()", source)
+        self.assertIn("gravity_factory.createSpiceInterface", source)
+        self.assertIn('ephemeris.zeroBase = "Earth"', source)
+        self.assertIn("scene.AddModelToDynamicsTask(ephemeris, 75)", source)
+        self.assertIn("[earth, sun]", source)
+        self.assertIn('"drives_directional_light": True', source)
+        self.assertIn("fill_light_intensity_lux=0.0", source)
+
     def test_rendezvous_reference_is_smooth_and_covers_visible_distance(self):
         scenario = _load_scenario()
         self.assertEqual(scenario.MISSION_TIME_STEP_S, 0.002)
