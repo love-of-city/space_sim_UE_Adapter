@@ -11,6 +11,8 @@ param(
     [string[]]$CaptureProducts = @(),
     [ValidateRange(0.0, 60.0)]
     [double]$CaptureRate = 0.0,
+    [ValidateRange(0.0, 60.0)]
+    [double]$PreviewRate = 0.0,
     [string]$CaptureNetworkHost = '127.0.0.1',
     [ValidateRange(0, 65535)]
     [int]$CaptureNetworkPort = 0,
@@ -52,6 +54,9 @@ if ($normalizedCaptureProducts.Count -gt 0) {
 }
 if ($CaptureRate -gt 0.0) {
     $arguments += "-BskCaptureRate=$CaptureRate"
+}
+if ($PreviewRate -gt 0.0) {
+    $arguments += "-BskPreviewRate=$PreviewRate"
 }
 if ($CaptureNetworkPort -gt 0) {
     $arguments += @("-BskCaptureHost=$CaptureNetworkHost", "-BskCapturePort=$CaptureNetworkPort")

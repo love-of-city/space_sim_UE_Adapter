@@ -11,6 +11,12 @@ enum class EBskCaptureChannel : uint8
     SemanticSegmentation
 };
 
+enum class EBskCapturePurpose : uint8
+{
+    AuthoritativeDataset,
+    Preview
+};
+
 struct BSKUNREALRUNTIME_API FBskCaptureRequest
 {
     FString CameraId;
@@ -19,6 +25,10 @@ struct BSKUNREALRUNTIME_API FBskCaptureRequest
     int64 SimulationTimeNanoseconds = 0;
     int64 SourceWallTimeNanoseconds = 0;
     int64 FrameId = -1;
+    FVector3d OriginInertialMeters = FVector3d::ZeroVector;
+    FMatrix44d LocalFromInertial = FMatrix44d::Identity;
+    EBskCapturePurpose Purpose = EBskCapturePurpose::AuthoritativeDataset;
+    bool bReuseExistingRgbTarget = false;
     FString OutputDirectory;
     bool bWriteToDisk = true;
     bool bSendToNetwork = false;

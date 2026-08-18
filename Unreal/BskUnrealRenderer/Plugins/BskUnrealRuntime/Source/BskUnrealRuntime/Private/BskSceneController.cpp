@@ -81,13 +81,24 @@ public:
         if (WakeEvent) FPlatformProcess::ReturnSynchEventToPool(WakeEvent);
     }
 
-    void EnqueueLatest(const FString& CameraId, TArray<uint8>&& Packet)
+    void EnqueueLatest(const FString& StreamKey, TArray<uint8>&& Packet)
     {
         {
             FScopeLock Lock(&PacketMutex);
-            PendingPackets.Add(CameraId, MoveTemp(Packet));
+            PendingPreviewPackets.Add(StreamKey, MoveTemp(Packet));
         }
         WakeEvent->Trigger();
+    }
+
+    bool EnqueueReliable(TArray<uint8>&& Packet)
+    {
+        {
+            FScopeLock Lock(&PacketMutex);
+            if (PendingReliablePackets.Num() >= MaxReliablePackets) return false;
+            PendingReliablePackets.Add(MoveTemp(Packet));
+        }
+        WakeEvent->Trigger();
+        return true;
     }
 
     virtual uint32 Run() override
@@ -97,9 +108,14 @@ public:
             TArray<uint8> Packet;
             {
                 FScopeLock Lock(&PacketMutex);
-                if (!PendingPackets.IsEmpty())
+                if (!PendingReliablePackets.IsEmpty())
                 {
-                    auto Iterator = PendingPackets.CreateIterator();
+                    Packet = MoveTemp(PendingReliablePackets[0]);
+                    PendingReliablePackets.RemoveAt(0, 1, EAllowShrinking::No);
+                }
+                else if (!PendingPreviewPackets.IsEmpty())
+                {
+                    auto Iterator = PendingPreviewPackets.CreateIterator();
                     Packet = MoveTemp(Iterator.Value());
                     Iterator.RemoveCurrent();
                 }
@@ -168,9 +184,11 @@ private:
 
     FString Address;
     uint16 Port = 0;
+    static constexpr int32 MaxReliablePackets = 16;
     FThreadSafeBool bStopRequested = false;
     FCriticalSection PacketMutex;
-    TMap<FString, TArray<uint8>> PendingPackets;
+    TArray<TArray<uint8>> PendingReliablePackets;
+    TMap<FString, TArray<uint8>> PendingPreviewPackets;
     FEvent* WakeEvent = nullptr;
     FRunnableThread* Thread = nullptr;
     FSocket* Socket = nullptr;
@@ -227,13 +245,15 @@ public:
         if (WakeEvent) FPlatformProcess::ReturnSynchEventToPool(WakeEvent);
     }
 
-    void EnqueueLatest(const FString& CameraId, FBskCaptureDiskWork&& Work)
+    bool EnqueueReliable(FBskCaptureDiskWork&& Work)
     {
         {
             FScopeLock Lock(&WorkMutex);
-            PendingWork.Add(CameraId, MoveTemp(Work));
+            if (PendingWork.Num() >= MaxPendingWork) return false;
+            PendingWork.Add(MoveTemp(Work));
         }
         WakeEvent->Trigger();
+        return true;
     }
 
     virtual uint32 Run() override
@@ -246,9 +266,8 @@ public:
                 FScopeLock Lock(&WorkMutex);
                 if (!PendingWork.IsEmpty())
                 {
-                    auto Iterator = PendingWork.CreateIterator();
-                    Work = MoveTemp(Iterator.Value());
-                    Iterator.RemoveCurrent();
+                    Work = MoveTemp(PendingWork[0]);
+                    PendingWork.RemoveAt(0, 1, EAllowShrinking::No);
                     bHasWork = true;
                 }
             }
@@ -279,8 +298,9 @@ public:
 
 private:
     FThreadSafeBool bStopRequested = false;
+    static constexpr int32 MaxPendingWork = 16;
     FCriticalSection WorkMutex;
-    TMap<FString, FBskCaptureDiskWork> PendingWork;
+    TArray<FBskCaptureDiskWork> PendingWork;
     FEvent* WakeEvent = nullptr;
     FRunnableThread* Thread = nullptr;
 };
@@ -315,6 +335,17 @@ bool CompressPng(const TArray<FColor>& Pixels, int32 Width, int32 Height, TArray
     const TSharedPtr<IImageWrapper> Wrapper = Module.CreateImageWrapper(EImageFormat::PNG);
     if (!Wrapper.IsValid() || !Wrapper->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor), Width, Height, ERGBFormat::BGRA, 8)) return false;
     const TArray64<uint8>& Compressed = Wrapper->GetCompressed(3);
+    if (Compressed.Num() > MAX_int32) return false;
+    OutBytes.Append(Compressed.GetData(), static_cast<int32>(Compressed.Num()));
+    return true;
+}
+
+bool CompressJpeg(const TArray<FColor>& Pixels, int32 Width, int32 Height, int32 Quality, TArray<uint8>& OutBytes)
+{
+    IImageWrapperModule& Module = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+    const TSharedPtr<IImageWrapper> Wrapper = Module.CreateImageWrapper(EImageFormat::JPEG);
+    if (!Wrapper.IsValid() || !Wrapper->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor), Width, Height, ERGBFormat::BGRA, 8)) return false;
+    const TArray64<uint8>& Compressed = Wrapper->GetCompressed(FMath::Clamp(Quality, 1, 100));
     if (Compressed.Num() > MAX_int32) return false;
     OutBytes.Append(Compressed.GetData(), static_cast<int32>(Compressed.Num()));
     return true;
@@ -566,34 +597,48 @@ void ABskSceneController::Tick(float DeltaSeconds)
             {
                 UE_LOG(LogBskUnreal, Warning, TEXT("Ignoring BSK frame: %s"), *RejectionReason);
             }
-            else if (TimeMode.Equals(TEXT("latest"), ESearchCase::IgnoreCase) || !bHasTargetFrame)
-            {
-                PreviousFrame = Latest;
-                TargetFrame = Latest;
-                bHasTargetFrame = true;
-                ApplyFrame(Latest);
-            }
             else
             {
-                PreviousFrame = TargetFrame;
-                TargetFrame = MoveTemp(Latest);
-                BlendElapsedSeconds = 0.0;
-                if (LastFrameArrivalSeconds > 0.0)
+                // Dataset products are rendered from the exact received frame before
+                // presentation interpolation/extrapolation is allowed to touch it.
+                UpdateAuthoritativeDataProductCaptures(Latest);
+                if (TimeMode.Equals(TEXT("latest"), ESearchCase::IgnoreCase) || !bHasTargetFrame)
                 {
-                    BlendDurationSeconds = FMath::Clamp(NowSeconds - LastFrameArrivalSeconds, 1.0 / 240.0, InterpolationDelaySeconds);
+                    PreviousFrame = Latest;
+                    TargetFrame = Latest;
+                    bHasTargetFrame = true;
+                    ApplyFrame(Latest);
                 }
+                else
+                {
+                    PreviousFrame = TargetFrame;
+                    TargetFrame = MoveTemp(Latest);
+                    BlendElapsedSeconds = 0.0;
+                    if (LastFrameArrivalSeconds > 0.0)
+                    {
+                        BlendDurationSeconds = FMath::Clamp(NowSeconds - LastFrameArrivalSeconds, 1.0 / 240.0, InterpolationDelaySeconds);
+                    }
+                }
+                LastFrameArrivalSeconds = NowSeconds;
             }
-            LastFrameArrivalSeconds = NowSeconds;
         }
         if (bHasTargetFrame && !TimeMode.Equals(TEXT("latest"), ESearchCase::IgnoreCase) && PreviousFrame.FrameId != TargetFrame.FrameId)
         {
             BlendElapsedSeconds += DeltaSeconds;
-            const double Alpha = FMath::Clamp(BlendElapsedSeconds / FMath::Max(BlendDurationSeconds, UE_DOUBLE_SMALL_NUMBER), 0.0, 1.0);
-            ApplyFrame(InterpolateFrame(PreviousFrame, TargetFrame, Alpha));
+            const double BlendDuration = FMath::Max(BlendDurationSeconds, UE_DOUBLE_SMALL_NUMBER);
+            const double Alpha = BlendElapsedSeconds / BlendDuration;
+            if (Alpha <= 1.0)
+            {
+                ApplyFrame(InterpolateFrame(PreviousFrame, TargetFrame, Alpha));
+            }
+            else
+            {
+                const double ExtrapolationSeconds = FMath::Min(BlendElapsedSeconds - BlendDuration, MaxExtrapolationSeconds);
+                ApplyFrame(ExtrapolateFrame(PreviousFrame, TargetFrame, ExtrapolationSeconds));
+            }
         }
     }
     UpdatePictureInPictureCaptures();
-    UpdateDataProductCaptures();
     if (GetWorld() && !PendingCommandIds.IsEmpty())
     {
         const double Now = GetWorld()->GetRealTimeSeconds();
@@ -952,6 +997,7 @@ void ABskSceneController::ConfigureCaptureOutput()
     FParse::Value(FCommandLine::Get(), TEXT("BskCaptureHost="), CaptureNetworkAddress);
     FParse::Value(FCommandLine::Get(), TEXT("BskCapturePort="), CaptureNetworkPort);
     FParse::Value(FCommandLine::Get(), TEXT("BskCaptureRate="), CaptureRateOverrideHertz);
+    FParse::Value(FCommandLine::Get(), TEXT("BskPreviewRate="), PreviewRateOverrideHertz);
     FString ProductsOverride;
     if (FParse::Value(FCommandLine::Get(), TEXT("BskCaptureProducts="), ProductsOverride))
     {
@@ -982,14 +1028,15 @@ void ABskSceneController::ConfigureCaptureOutput()
         CaptureDiskWriter = MakeShared<FBskCaptureDiskWriter>();
     }
     CaptureRateOverrideHertz = FMath::Clamp(CaptureRateOverrideHertz, 0.0, 60.0);
+    PreviewRateOverrideHertz = FMath::Clamp(PreviewRateOverrideHertz, 0.0, 60.0);
     CaptureNetworkPort = FMath::Clamp(CaptureNetworkPort, 0, 65535);
     if (CaptureNetworkPort > 0)
     {
         CaptureNetworkSender = MakeShared<FBskCaptureNetworkSender>(CaptureNetworkAddress, static_cast<uint16>(CaptureNetworkPort));
     }
-    UE_LOG(LogBskUnreal, Display, TEXT("BSK camera products disk=%s network=%s:%d override_products=%s"),
+    UE_LOG(LogBskUnreal, Display, TEXT("BSK camera products disk=%s network=%s:%d capture_hz=%.1f preview_hz=%.1f override_products=%s"),
         CaptureOutputDirectory.IsEmpty() ? TEXT("disabled") : *CaptureOutputDirectory,
-        *CaptureNetworkAddress, CaptureNetworkPort,
+        *CaptureNetworkAddress, CaptureNetworkPort, CaptureRateOverrideHertz, PreviewRateOverrideHertz,
         CaptureProductOverride.IsEmpty() ? TEXT("manifest") : *FString::Join(CaptureProductOverride, TEXT(",")));
 }
 
@@ -1727,7 +1774,7 @@ void ABskSceneController::ConfigureCamera(AActor* Actor, const FBskCameraDefinit
         if (Capture) Capture->Deactivate();
         CameraRenderTargets.Remove(Definition.CameraId);
         CameraNextCaptureSeconds.Remove(Definition.CameraId);
-        CameraNextDataCaptureSeconds.Remove(Definition.CameraId);
+        CameraNextDataCaptureSimulationNanoseconds.Remove(Definition.CameraId);
         CameraPictureInPictureVisibility.Remove(Definition.CameraId);
         return;
     }
@@ -1766,7 +1813,7 @@ void ABskSceneController::ConfigureCamera(AActor* Actor, const FBskCameraDefinit
         CameraPictureInPictureVisibility.Add(Definition.CameraId, true);
     }
     CameraNextCaptureSeconds.Add(Definition.CameraId, 0.0);
-    CameraNextDataCaptureSeconds.Add(Definition.CameraId, 0.0);
+    CameraNextDataCaptureSimulationNanoseconds.Add(Definition.CameraId, 0);
 }
 
 void ABskSceneController::UpdatePictureInPictureCaptures()
@@ -1782,29 +1829,66 @@ void ABskSceneController::UpdatePictureInPictureCaptures()
         const double NextCaptureSeconds = CameraNextCaptureSeconds.FindRef(Pair.Key);
         if (NowSeconds + UE_DOUBLE_SMALL_NUMBER < NextCaptureSeconds) continue;
         Capture->CaptureScene();
-        CameraNextCaptureSeconds.Add(Pair.Key, NowSeconds + 1.0 / FMath::Max(1.0, Definition.CaptureRateHertz));
+        const double PreviewRate = PreviewRateOverrideHertz > 0.0 ? PreviewRateOverrideHertz : Definition.CaptureRateHertz;
+        CameraNextCaptureSeconds.Add(Pair.Key, NowSeconds + 1.0 / FMath::Max(1.0, PreviewRate));
+        if (PreviewRateOverrideHertz > 0.0 && CaptureNetworkSender && bHasPresentationFrame)
+        {
+            FBskCaptureRequest Request;
+            Request.CameraId = Pair.Key;
+            Request.Channels.Add(EBskCaptureChannel::Rgb);
+            Request.Resolution = Definition.Resolution;
+            Request.SimulationTimeNanoseconds = PresentationFrame.SimulationTimeNanoseconds;
+            Request.SourceWallTimeNanoseconds = PresentationFrame.WallTimeNanoseconds;
+            Request.FrameId = PresentationFrame.FrameId;
+            Request.OriginInertialMeters = PresentationFrame.OriginInertialMeters;
+            Request.LocalFromInertial = PresentationFrame.LocalFromInertial;
+            Request.Purpose = EBskCapturePurpose::Preview;
+            Request.bReuseExistingRgbTarget = true;
+            Request.bSendToNetwork = true;
+            FString Error;
+            UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>();
+            if (!RenderSubsystem || !RenderSubsystem->RequestCapture(Request, Error))
+            {
+                UE_LOG(LogBskUnreal, Warning, TEXT("Preview capture for %s failed: %s"), *Pair.Key, *Error);
+            }
+        }
     }
 }
 
-void ABskSceneController::UpdateDataProductCaptures()
+void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRenderFrame& AuthoritativeFrame)
 {
     if (!GetWorld() || (CaptureOutputDirectory.IsEmpty() && !CaptureNetworkSender)) return;
-    const double NowSeconds = GetWorld()->GetTimeSeconds();
     UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>();
-    const FBskRenderFrame* AppliedFrame = RenderSubsystem ? RenderSubsystem->GetLatestAppliedFrame() : nullptr;
-    if (!AppliedFrame) return;
+    if (!RenderSubsystem) return;
+    TArray<FString> DueCameras;
     for (const TPair<FString, FBskCameraDefinition>& Pair : ManifestCameras)
     {
         const TArray<FString>& Products = CaptureProductOverride.IsEmpty() ? Pair.Value.CaptureProducts : CaptureProductOverride;
         if (Products.IsEmpty()) continue;
-        const double NextCaptureSeconds = CameraNextDataCaptureSeconds.FindRef(Pair.Key);
-        if (NowSeconds + UE_DOUBLE_SMALL_NUMBER < NextCaptureSeconds) continue;
+        const int64 NextCaptureNanoseconds = CameraNextDataCaptureSimulationNanoseconds.FindRef(Pair.Key);
+        if (AuthoritativeFrame.SimulationTimeNanoseconds < NextCaptureNanoseconds) continue;
+        DueCameras.Add(Pair.Key);
+    }
+    if (DueCameras.IsEmpty()) return;
+
+    // Snapshot capture and smooth presentation share one UE world, so apply the
+    // exact source frame only for the synchronous SceneCapture pass, then restore
+    // the presentation frame. This never writes data back to BSK/MJScene.
+    ApplyFrame(AuthoritativeFrame, false);
+    for (const FString& CameraId : DueCameras)
+    {
+        const FBskCameraDefinition* Definition = ManifestCameras.Find(CameraId);
+        if (!Definition) continue;
+        const TArray<FString>& Products = CaptureProductOverride.IsEmpty() ? Definition->CaptureProducts : CaptureProductOverride;
         FBskCaptureRequest Request;
-        Request.CameraId = Pair.Key;
-        Request.Resolution = Pair.Value.Resolution;
-        Request.SimulationTimeNanoseconds = AppliedFrame->SimulationTimeNanoseconds;
-        Request.SourceWallTimeNanoseconds = AppliedFrame->WallTimeNanoseconds;
-        Request.FrameId = AppliedFrame->FrameId;
+        Request.CameraId = CameraId;
+        Request.Resolution = Definition->Resolution;
+        Request.SimulationTimeNanoseconds = AuthoritativeFrame.SimulationTimeNanoseconds;
+        Request.SourceWallTimeNanoseconds = AuthoritativeFrame.WallTimeNanoseconds;
+        Request.FrameId = AuthoritativeFrame.FrameId;
+        Request.OriginInertialMeters = AuthoritativeFrame.OriginInertialMeters;
+        Request.LocalFromInertial = AuthoritativeFrame.LocalFromInertial;
+        Request.Purpose = EBskCapturePurpose::AuthoritativeDataset;
         Request.OutputDirectory = CaptureOutputDirectory;
         Request.bWriteToDisk = !CaptureOutputDirectory.IsEmpty();
         Request.bSendToNetwork = CaptureNetworkSender.IsValid();
@@ -1815,13 +1899,19 @@ void ABskSceneController::UpdateDataProductCaptures()
             else if (Product == TEXT("segmentation")) Request.Channels.Add(EBskCaptureChannel::SemanticSegmentation);
         }
         FString Error;
-        if (!RenderSubsystem || !RenderSubsystem->RequestCapture(Request, Error))
+        if (!RenderSubsystem->RequestCapture(Request, Error))
         {
-            UE_LOG(LogBskUnreal, Error, TEXT("Capture request for %s failed: %s"), *Pair.Key, *Error);
+            UE_LOG(LogBskUnreal, Error, TEXT("Authoritative capture for %s frame=%lld failed: %s"),
+                *CameraId, AuthoritativeFrame.FrameId, *Error);
         }
-        const double Rate = CaptureRateOverrideHertz > 0.0 ? CaptureRateOverrideHertz : Pair.Value.CaptureRateHertz;
-        CameraNextDataCaptureSeconds.Add(Pair.Key, NowSeconds + 1.0 / FMath::Max(1.0, Rate));
+        const double Rate = CaptureRateOverrideHertz > 0.0 ? CaptureRateOverrideHertz : Definition->CaptureRateHertz;
+        const int64 PeriodNanoseconds = FMath::Max<int64>(1, FMath::RoundToInt64(1.0e9 / FMath::Max(1.0, Rate)));
+        int64 Next = CameraNextDataCaptureSimulationNanoseconds.FindRef(CameraId);
+        if (Next <= 0) Next = AuthoritativeFrame.SimulationTimeNanoseconds;
+        do { Next += PeriodNanoseconds; } while (Next <= AuthoritativeFrame.SimulationTimeNanoseconds);
+        CameraNextDataCaptureSimulationNanoseconds.Add(CameraId, Next);
     }
+    if (bHasPresentationFrame) ApplyFrame(PresentationFrame, false);
 }
 
 bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Request, FString& OutError)
@@ -1902,7 +1992,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
                 OutError = TEXT("could not create RGB capture resources");
                 return false;
             }
-            Capture->CaptureScene();
+            if (!Request.bReuseExistingRgbTarget) Capture->CaptureScene();
             TArray<FColor> Pixels;
             FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
             ReadFlags.SetLinearToGamma(false);
@@ -1911,10 +2001,17 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
                 OutError = TEXT("RGB render-target readback failed");
                 return false;
             }
-            FCapturedDataProduct Product{TEXT("rgb"), TEXT("png/bgra8_srgb"), TEXT("png")};
-            if (!CompressPng(Pixels, Resolution.X, Resolution.Y, Product.Bytes))
+            const bool bPreview = Request.Purpose == EBskCapturePurpose::Preview;
+            FCapturedDataProduct Product{
+                TEXT("rgb"),
+                bPreview ? TEXT("jpeg/bgra8_srgb/quality75") : TEXT("png/bgra8_srgb"),
+                bPreview ? TEXT("jpg") : TEXT("png")};
+            const bool bCompressed = bPreview
+                ? CompressJpeg(Pixels, Resolution.X, Resolution.Y, 75, Product.Bytes)
+                : CompressPng(Pixels, Resolution.X, Resolution.Y, Product.Bytes);
+            if (!bCompressed)
             {
-                OutError = TEXT("RGB PNG encoding failed");
+                OutError = bPreview ? TEXT("RGB JPEG encoding failed") : TEXT("RGB PNG encoding failed");
                 return false;
             }
             Products.Add(MoveTemp(Product));
@@ -2030,6 +2127,10 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
     Metadata->SetStringField(TEXT("type"), TEXT("camera_frame"));
     Metadata->SetStringField(TEXT("session_id"), ActiveSessionId);
     Metadata->SetStringField(TEXT("camera_id"), Request.CameraId);
+    Metadata->SetStringField(TEXT("stream_kind"),
+        Request.Purpose == EBskCapturePurpose::AuthoritativeDataset ? TEXT("authoritative") : TEXT("preview"));
+    Metadata->SetStringField(TEXT("state_kind"),
+        Request.Purpose == EBskCapturePurpose::AuthoritativeDataset ? TEXT("authoritative") : TEXT("presentation"));
     Metadata->SetStringField(TEXT("capture_sequence"), LexToString(Sequence));
     Metadata->SetStringField(TEXT("source_frame_id"), LexToString(Request.FrameId));
     Metadata->SetStringField(TEXT("sim_time_ns"), LexToString(Request.SimulationTimeNanoseconds));
@@ -2068,27 +2169,20 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         InertialFromCameraMatrix[Row][Column] = LocalFromCameraMatrix[Row][Column];
     }
     FVector3d PositionInertialMeters = PositionLocalMeters;
-    FVector3d OriginInertialMeters = FVector3d::ZeroVector;
-    double LocalFromInertialMatrix[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
-    if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
+    const FVector3d OriginInertialMeters = Request.OriginInertialMeters;
+    double LocalFromInertialMatrix[3][3];
+    for (int32 Row = 0; Row < 3; ++Row) for (int32 Column = 0; Column < 3; ++Column)
     {
-        if (const FBskRenderFrame* Frame = RenderSubsystem->GetLatestAppliedFrame())
+        LocalFromInertialMatrix[Row][Column] = Request.LocalFromInertial.M[Row][Column];
+    }
+    for (int32 Row = 0; Row < 3; ++Row)
+    {
+        PositionInertialMeters[Row] = OriginInertialMeters[Row];
+        for (int32 K = 0; K < 3; ++K) PositionInertialMeters[Row] += LocalFromInertialMatrix[K][Row] * PositionLocalMeters[K];
+        for (int32 Column = 0; Column < 3; ++Column)
         {
-            OriginInertialMeters = Frame->OriginInertialMeters;
-            for (int32 Row = 0; Row < 3; ++Row) for (int32 Column = 0; Column < 3; ++Column)
-            {
-                LocalFromInertialMatrix[Row][Column] = Frame->LocalFromInertial.M[Row][Column];
-            }
-            for (int32 Row = 0; Row < 3; ++Row)
-            {
-                PositionInertialMeters[Row] = OriginInertialMeters[Row];
-                for (int32 K = 0; K < 3; ++K) PositionInertialMeters[Row] += LocalFromInertialMatrix[K][Row] * PositionLocalMeters[K];
-                for (int32 Column = 0; Column < 3; ++Column)
-                {
-                    InertialFromCameraMatrix[Row][Column] = 0.0;
-                    for (int32 K = 0; K < 3; ++K) InertialFromCameraMatrix[Row][Column] += LocalFromInertialMatrix[K][Row] * LocalFromCameraMatrix[K][Column];
-                }
-            }
+            InertialFromCameraMatrix[Row][Column] = 0.0;
+            for (int32 K = 0; K < 3; ++K) InertialFromCameraMatrix[Row][Column] += LocalFromInertialMatrix[K][Row] * LocalFromCameraMatrix[K][Column];
         }
     }
     TSharedPtr<FJsonObject> Extrinsics = MakeShared<FJsonObject>();
@@ -2148,7 +2242,18 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         AddBigEndianUint32(Packet, static_cast<uint32>(MetadataUtf8.Length()));
         Packet.Append(reinterpret_cast<const uint8*>(MetadataUtf8.Get()), MetadataUtf8.Length());
         for (const FCapturedDataProduct& Product : Products) Packet.Append(Product.Bytes);
-        CaptureNetworkSender->EnqueueLatest(Request.CameraId, MoveTemp(Packet));
+        if (Request.Purpose == EBskCapturePurpose::AuthoritativeDataset)
+        {
+            if (!CaptureNetworkSender->EnqueueReliable(MoveTemp(Packet)))
+            {
+                OutError = TEXT("authoritative capture network queue is full; frame was not silently replaced");
+                return false;
+            }
+        }
+        else
+        {
+            CaptureNetworkSender->EnqueueLatest(FString::Printf(TEXT("preview:%s"), *Request.CameraId), MoveTemp(Packet));
+        }
     }
 
     if (Request.bWriteToDisk)
@@ -2170,7 +2275,11 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         Work.Stem = Stem;
         Work.MetadataJson = MetadataJson;
         Work.Products = Products;
-        CaptureDiskWriter->EnqueueLatest(Request.CameraId, MoveTemp(Work));
+        if (!CaptureDiskWriter->EnqueueReliable(MoveTemp(Work)))
+        {
+            OutError = TEXT("authoritative capture disk queue is full; frame was not silently replaced");
+            return false;
+        }
     }
     return true;
 }
@@ -2197,7 +2306,7 @@ void ABskSceneController::AttachManifestChildren()
     }
 }
 
-void ABskSceneController::ApplyFrame(const FBskRenderFrame& Frame)
+void ABskSceneController::ApplyFrame(const FBskRenderFrame& Frame, bool bPresentationFrame)
 {
     check(IsInGameThread());
     if (LastFrameId < 0)
@@ -2232,6 +2341,9 @@ void ABskSceneController::ApplyFrame(const FBskRenderFrame& Frame)
     UpdateVisualStates(Frame);
     UpdateLightTargets();
     DrawOrbitLines(Frame);
+    if (!bPresentationFrame) return;
+    PresentationFrame = Frame;
+    bHasPresentationFrame = true;
     LastFrameId = Frame.FrameId;
     FrameAppliedEvent.Broadcast(Frame);
     if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
@@ -2313,6 +2425,61 @@ FBskRenderFrame ABskSceneController::InterpolateFrame(const FBskRenderFrame& Fro
                 Pair.Value.Number = FMath::Lerp(PriorChannel->Number, Pair.Value.Number, Alpha);
             }
         }
+    }
+    return Result;
+}
+
+FBskRenderFrame ABskSceneController::ExtrapolateFrame(
+    const FBskRenderFrame& From,
+    const FBskRenderFrame& To,
+    double SecondsBeyondTarget) const
+{
+    FBskRenderFrame Result = To;
+    const double SourceDeltaSeconds = static_cast<double>(To.SimulationTimeNanoseconds - From.SimulationTimeNanoseconds) * 1.0e-9;
+    const double ExtraSeconds = FMath::Clamp(SecondsBeyondTarget, 0.0, MaxExtrapolationSeconds);
+    if (SourceDeltaSeconds <= UE_DOUBLE_SMALL_NUMBER || ExtraSeconds <= 0.0) return Result;
+    Result.SimulationTimeNanoseconds += FMath::RoundToInt64(ExtraSeconds * 1.0e9);
+    Result.OriginInertialMeters += (To.OriginInertialMeters - From.OriginInertialMeters) * (ExtraSeconds / SourceDeltaSeconds);
+
+    const auto ExtrapolateOrientation = [SourceDeltaSeconds, ExtraSeconds](const FQuat4d& A, const FQuat4d& B)
+    {
+        FQuat4d Delta = (B * A.Inverse()).GetNormalized();
+        if (Delta.W < 0.0) Delta = FQuat4d(-Delta.X, -Delta.Y, -Delta.Z, -Delta.W);
+        const double HalfAngle = FMath::Acos(FMath::Clamp(Delta.W, -1.0, 1.0));
+        const double SinHalf = FMath::Sin(HalfAngle);
+        if (FMath::Abs(SinHalf) <= UE_DOUBLE_SMALL_NUMBER) return B;
+        const FVector3d Axis(Delta.X / SinHalf, Delta.Y / SinHalf, Delta.Z / SinHalf);
+        const FQuat4d ExtraRotation(Axis, 2.0 * HalfAngle * ExtraSeconds / SourceDeltaSeconds);
+        return (ExtraRotation * B).GetNormalized();
+    };
+
+    TMap<FString, const FBskRenderObjectState*> FromObjects;
+    for (const FBskRenderObjectState& State : From.Objects)
+    {
+        FromObjects.Add(State.ObjectId.IsEmpty() ? State.Name : State.ObjectId, &State);
+    }
+    for (FBskRenderObjectState& State : Result.Objects)
+    {
+        const FString& Key = State.ObjectId.IsEmpty() ? State.Name : State.ObjectId;
+        const FBskRenderObjectState* const* Prior = FromObjects.Find(Key);
+        if (!Prior) continue;
+        const FVector3d Velocity = State.bHasVelocity
+            ? State.VelocityMetersPerSecond
+            : (State.PositionMeters - (*Prior)->PositionMeters) / SourceDeltaSeconds;
+        State.PositionMeters += Velocity * ExtraSeconds;
+        State.OrientationWxyz = ExtrapolateOrientation((*Prior)->OrientationWxyz, State.OrientationWxyz);
+    }
+
+    TMap<FString, const FBskCelestialBodyState*> FromCelestial;
+    for (const FBskCelestialBodyState& State : From.CelestialBodies) FromCelestial.Add(State.BodyId, &State);
+    for (FBskCelestialBodyState& State : Result.CelestialBodies)
+    {
+        const FBskCelestialBodyState* const* Prior = FromCelestial.Find(State.BodyId);
+        if (!Prior) continue;
+        const FVector3d FiniteDifferenceVelocity = (State.PositionMeters - (*Prior)->PositionMeters) / SourceDeltaSeconds;
+        const FVector3d Velocity = State.VelocityMetersPerSecond.IsNearlyZero() ? FiniteDifferenceVelocity : State.VelocityMetersPerSecond;
+        State.PositionMeters += Velocity * ExtraSeconds;
+        State.OrientationWxyz = ExtrapolateOrientation((*Prior)->OrientationWxyz, State.OrientationWxyz);
     }
     return Result;
 }

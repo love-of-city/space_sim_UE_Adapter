@@ -125,8 +125,9 @@ private:
     bool LoadConfiguration();
     void ApplyManifest(const FBskSceneManifest& Manifest);
     void ApplyEvent(const FBskRenderEvent& Event);
-    void ApplyFrame(const FBskRenderFrame& Frame);
+    void ApplyFrame(const FBskRenderFrame& Frame, bool bPresentationFrame = true);
     FBskRenderFrame InterpolateFrame(const FBskRenderFrame& From, const FBskRenderFrame& To, double Alpha) const;
+    FBskRenderFrame ExtrapolateFrame(const FBskRenderFrame& From, const FBskRenderFrame& To, double SecondsBeyondTarget) const;
     AActor* GetOrCreateActor(const FBskRenderObjectState& State);
     AActor* FindBoundActor(const FString& ObjectName) const;
     AActor* SpawnFromSpec(const FString& ObjectName, const FObjectSpec& Spec);
@@ -137,7 +138,7 @@ private:
     AActor* SpawnCamera(const FBskCameraDefinition& Definition);
     void ConfigureCamera(AActor* Actor, const FBskCameraDefinition& Definition);
     void UpdatePictureInPictureCaptures();
-    void UpdateDataProductCaptures();
+    void UpdateAuthoritativeDataProductCaptures(const FBskRenderFrame& AuthoritativeFrame);
     bool CaptureCameraDataProducts(const FBskCaptureRequest& Request, FString& OutError);
     void ConfigureCaptureOutput();
     void ApplyVisualMountTransform(AActor* Actor, const FBskVisualDefinition& Definition) const;
@@ -175,7 +176,7 @@ private:
     UPROPERTY(Transient)
     TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraSegmentationRenderTargets;
     TMap<FString, double> CameraNextCaptureSeconds;
-    TMap<FString, double> CameraNextDataCaptureSeconds;
+    TMap<FString, int64> CameraNextDataCaptureSimulationNanoseconds;
     TMap<FString, bool> CameraPictureInPictureVisibility;
     TObjectPtr<ADirectionalLight> SunLight;
     TObjectPtr<ADirectionalLight> FillLight;
@@ -225,6 +226,8 @@ private:
     bool bHasTargetFrame = false;
     FBskRenderFrame PreviousFrame;
     FBskRenderFrame TargetFrame;
+    FBskRenderFrame PresentationFrame;
+    bool bHasPresentationFrame = false;
     bool bScreenshotRequested = false;
     TArray<FBskMissionEventView> MissionEventHistory;
     TMap<FString, double> PendingCommandIds;
@@ -236,6 +239,7 @@ private:
     FString CaptureNetworkAddress = TEXT("127.0.0.1");
     int32 CaptureNetworkPort = 0;
     double CaptureRateOverrideHertz = 0.0;
+    double PreviewRateOverrideHertz = 0.0;
     TArray<FString> CaptureProductOverride;
     int64 CaptureSequence = 0;
     TSharedPtr<IBskCaptureProvider> BuiltinCaptureProvider;

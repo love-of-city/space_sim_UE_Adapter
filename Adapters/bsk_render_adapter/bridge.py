@@ -183,6 +183,7 @@ class BasiliskRenderBridge(_BridgeBase):
         }
         self._command_handlers: dict[str, Callable[[Mapping[str, Any], int], Mapping[str, Any] | None]] = {}
         self._frame_id = 0
+        self._last_published_sim_time_ns = -1
         self._manifest_revision = 1
         self.frame_period_ns = int(frame_period_ns) if frame_period_ns is not None else None
         self._next_frame_ns = 0
@@ -199,6 +200,18 @@ class BasiliskRenderBridge(_BridgeBase):
             label="Resend scene manifest",
             show_in_ui=False,
         )
+
+    @property
+    def last_published_frame_id(self) -> int:
+        """Return the last authoritative render frame ID, or ``-1`` before Update."""
+
+        return self._frame_id - 1
+
+    @property
+    def last_published_sim_time_ns(self) -> int:
+        """Return the exact simulation timestamp carried by the last render frame."""
+
+        return self._last_published_sim_time_ns
 
     def add_object(
         self,
@@ -728,6 +741,7 @@ class BasiliskRenderBridge(_BridgeBase):
         """Start a new stream session and publish retained scene data."""
 
         self._frame_id = 0
+        self._last_published_sim_time_ns = -1
         self._next_frame_ns = int(CurrentSimNanos)
         self._record_and_retain_static()
         self.publish_event(
@@ -833,6 +847,7 @@ class BasiliskRenderBridge(_BridgeBase):
         self.publisher.publish_frame(message)
         if self.recorder:
             self.recorder.write(message)
+        self._last_published_sim_time_ns = current_sim_ns
         self._frame_id += 1
         if self.frame_period_ns is not None:
             elapsed = max(0, current_sim_ns - self._next_frame_ns)

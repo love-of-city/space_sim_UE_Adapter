@@ -290,7 +290,8 @@ C_LB   = C_LN C_BN^T
 - 录制回放、暂停/倍速/单步/定位 API
 - 多相机 manifest 和运行时 CameraActor
 - RGB、米制深度与实例分割采集，含时间戳、相机内外参和浮动原点元数据
-- 相机数据产品的磁盘输出及独立 latest-frame TCP 网络输出
+- 双画面通道：平滑的 latest-frame JPEG 操作预览，以及不经过插值/外推的权威 RGB、深度、分割采集
+- 权威采集携带精确 `source_frame_id`/`sim_time_ns`，使用有界可靠队列；预览拥塞时只覆盖旧预览帧
 - `IBskCaptureProvider` 扩展接口
 - Vizard 风格事件时间线、任务状态与基于白名单的双向交互命令
 - 默认隐藏且可按 `M` 显示的任务面板，以及自由/环绕/跟随相机和轨道线

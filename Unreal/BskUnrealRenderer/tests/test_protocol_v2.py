@@ -391,6 +391,8 @@ class ProtocolV2Tests(unittest.TestCase):
         for sim_time_ns in (0, 1_000_000, 33_000_000, 34_000_000, 66_000_000, 67_000_000):
             bridge.UpdateState(sim_time_ns)
         self.assertEqual([frame["sim_time_ns"] for frame in publisher.frames], ["0", "34000000", "67000000"])
+        self.assertEqual(bridge.last_published_frame_id, 2)
+        self.assertEqual(bridge.last_published_sim_time_ns, 67_000_000)
 
     def test_recording_round_trip(self):
         messages = [
