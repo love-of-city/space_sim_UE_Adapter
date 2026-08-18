@@ -20,6 +20,10 @@
       "Enabled": true
     },
     {
+      "Name": "PixelStreaming2",
+      "Enabled": true
+    },
+    {
       "Name": "EditorScriptingUtilities",
       "Enabled": true
     }

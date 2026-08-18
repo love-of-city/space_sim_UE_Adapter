@@ -117,6 +117,14 @@ Demo 8 也可以在线实时流式运行。此时 UE 先监听，Basilisk/MJScen
 .\scripts\stop_renderer.ps1
 ```
 
+连接已经运行的 Pixel Streaming 2 信令服务器时：
+
+```powershell
+.\scripts\start_renderer.ps1 -PixelStreamingURL ws://127.0.0.1:8888 -PixelStreamingId BskRenderer -PixelStreamingFps 60
+```
+
+此模式发送 UE 主视口，且自动使用离屏固定分辨率；浏览器预览不参与权威相机数据采集。
+
 直接回放：
 
 ```powershell

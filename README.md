@@ -112,6 +112,20 @@ SPICE 星历统一生成，UE 根据逐帧太阳方向驱动平行光并关闭�
 .\scripts\run_orbital_grasp.ps1 -CaptureProducts rgb,depth,segmentation -CaptureRate 2 -CaptureNetworkPort 5560
 ```
 
+### Pixel Streaming 2 操作预览
+
+UE 5.6 官方 `PixelStreaming2` 插件已启用。`start_renderer.ps1` 接收
+`-PixelStreamingURL`、`-PixelStreamingId` 和 `-PixelStreamingFps`；启用后以
+H.264/WebRTC 发送 UE 主视口，并使用离屏固定分辨率保证窗口失焦或最小化时仍提交视频帧。
+该流只用于低延迟预览，不替代 `bsk-capture/1` 权威 RGB/深度/分割采集。
+
+信令服务器和网页集成由独立的 `space_arm_data_platform` 仓库启动：
+
+```powershell
+Set-Location E:\mujoco_demo\space_arm_data_platform
+.\scripts\run_platform.ps1 -PreviewRate 60 -CaptureRate 10
+```
+
 仓库级脚本只转发参数，原有 `Unreal\BskUnrealRenderer\scripts` 命令仍然可用。
 `scripts` 目录同时提供 `start_renderer.ps1`、`stop_renderer.ps1`、`run_bsk.ps1`、`run_mock.ps1`、`test_demo8.ps1`、`package.ps1` 及 MJCF 资产准备入口。
 

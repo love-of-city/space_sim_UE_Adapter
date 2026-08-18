@@ -13,6 +13,10 @@ param(
     [double]$CaptureRate = 0.0,
     [ValidateRange(0.0, 60.0)]
     [double]$PreviewRate = 0.0,
+    [string]$PixelStreamingURL = '',
+    [string]$PixelStreamingId = 'BskRenderer',
+    [ValidateRange(1, 120)]
+    [int]$PixelStreamingFps = 60,
     [string]$CaptureNetworkHost = '127.0.0.1',
     [ValidateRange(0, 65535)]
     [int]$CaptureNetworkPort = 0,
@@ -57,6 +61,21 @@ if ($CaptureRate -gt 0.0) {
 }
 if ($PreviewRate -gt 0.0) {
     $arguments += "-BskPreviewRate=$PreviewRate"
+}
+if ($PixelStreamingURL) {
+    $arguments += @(
+        # Pixel Streaming must keep rendering even when no local window is focused/minimized.
+        # ForceRes keeps the requested back-buffer size in off-screen mode.
+        '-RenderOffscreen',
+        '-ForceRes',
+        "-PixelStreamingConnectionURL=$PixelStreamingURL",
+        "-PixelStreamingID=$PixelStreamingId",
+        "-PixelStreamingWebRTCFps=$PixelStreamingFps",
+        '-PixelStreamingEncoderCodec=H264',
+        '-PixelStreamingEncoderLatencyMode=UltraLowLatency',
+        '-PixelStreamingWebRTCDisableTransmitAudio=true',
+        '-PixelStreamingWebRTCDisableReceiveAudio=true'
+    )
 }
 if ($CaptureNetworkPort -gt 0) {
     $arguments += @("-BskCaptureHost=$CaptureNetworkHost", "-BskCapturePort=$CaptureNetworkPort")
