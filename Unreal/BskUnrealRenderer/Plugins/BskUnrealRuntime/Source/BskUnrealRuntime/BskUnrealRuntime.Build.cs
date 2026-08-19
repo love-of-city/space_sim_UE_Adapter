@@ -7,7 +7,12 @@ public class BskUnrealRuntime : ModuleRules
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[]
         {
-            "Core", "CoreUObject", "Engine", "InputCore", "Json", "Networking", "Sockets", "ImageWrapper", "RenderCore", "RHI"
+            "Core", "CoreUObject", "Engine", "InputCore", "Json", "Networking", "Sockets", "ImageWrapper", "RenderCore", "RHI",
+            "PixelStreaming2", "PixelStreaming2Core", "PixelStreaming2Input", "PixelCapture"
         });
+        PrivateDependencyModuleNames.Add("PixelStreaming2RTC");
+        PrivateIncludePaths.Add(System.IO.Path.Combine(
+            EngineDirectory,
+            "Plugins/Media/PixelStreaming2/Source/PixelStreaming2/Internal"));
     }
 }

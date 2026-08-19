@@ -17,6 +17,13 @@ param(
     [string]$PixelStreamingId = 'BskRenderer',
     [ValidateRange(1, 120)]
     [int]$PixelStreamingFps = 60,
+    [string[]]$PixelStreamingCameraIds = @(),
+    [ValidateRange(160, 1920)]
+    [int]$PixelStreamingCameraWidth = 640,
+    [ValidateRange(90, 1080)]
+    [int]$PixelStreamingCameraHeight = 360,
+    [ValidateRange(1, 60)]
+    [int]$PixelStreamingCameraFps = 30,
     [string]$CaptureNetworkHost = '127.0.0.1',
     [ValidateRange(0, 65535)]
     [int]$CaptureNetworkPort = 0,
@@ -76,6 +83,16 @@ if ($PixelStreamingURL) {
         '-PixelStreamingWebRTCDisableTransmitAudio=true',
         '-PixelStreamingWebRTCDisableReceiveAudio=true'
     )
+    if ($PixelStreamingCameraIds.Count -gt 0) {
+        $arguments += @(
+            "-BskPixelStreamingURL=$PixelStreamingURL",
+            "-BskPixelStreamingBaseId=$PixelStreamingId",
+            "-BskPixelStreamingCameras=$($PixelStreamingCameraIds -join '+')",
+            "-BskPixelStreamingCameraWidth=$PixelStreamingCameraWidth",
+            "-BskPixelStreamingCameraHeight=$PixelStreamingCameraHeight",
+            "-BskPixelStreamingCameraFps=$PixelStreamingCameraFps"
+        )
+    }
 }
 if ($CaptureNetworkPort -gt 0) {
     $arguments += @("-BskCaptureHost=$CaptureNetworkHost", "-BskCapturePort=$CaptureNetworkPort")

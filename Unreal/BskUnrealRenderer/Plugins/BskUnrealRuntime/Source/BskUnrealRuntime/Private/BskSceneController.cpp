@@ -50,6 +50,11 @@
 #include "Misc/Paths.h"
 #include "Misc/Parse.h"
 #include "Modules/ModuleManager.h"
+#include "IPixelStreaming2Module.h"
+#include "IPixelStreaming2Streamer.h"
+#include "IPixelStreaming2VideoProducer.h"
+#include "PixelStreaming2Delegates.h"
+#include "VideoProducerRenderTarget.h"
 #include "RHICommandList.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -542,6 +547,7 @@ void ABskSceneController::BeginPlay()
     Super::BeginPlay();
     LoadConfiguration();
     ConfigureCaptureOutput();
+    ConfigurePixelStreamingOutput();
     CreateEnvironment();
     if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
     {
@@ -559,6 +565,7 @@ void ABskSceneController::BeginPlay()
 
 void ABskSceneController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    ShutdownPixelStreamingCameras();
     if (BuiltinCaptureProvider && GetWorld())
     {
         if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
@@ -639,6 +646,7 @@ void ABskSceneController::Tick(float DeltaSeconds)
         }
     }
     UpdatePictureInPictureCaptures();
+    UpdatePixelStreamingCameraCaptures();
     if (GetWorld() && !PendingCommandIds.IsEmpty())
     {
         const double Now = GetWorld()->GetRealTimeSeconds();
@@ -1038,6 +1046,181 @@ void ABskSceneController::ConfigureCaptureOutput()
         CaptureOutputDirectory.IsEmpty() ? TEXT("disabled") : *CaptureOutputDirectory,
         *CaptureNetworkAddress, CaptureNetworkPort, CaptureRateOverrideHertz, PreviewRateOverrideHertz,
         CaptureProductOverride.IsEmpty() ? TEXT("manifest") : *FString::Join(CaptureProductOverride, TEXT(",")));
+}
+
+void ABskSceneController::ConfigurePixelStreamingOutput()
+{
+    FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingURL="), PixelStreamingConnectionUrl);
+    FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingBaseId="), PixelStreamingBaseId);
+    FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameraWidth="), PixelStreamingCameraWidth);
+    FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameraHeight="), PixelStreamingCameraHeight);
+    FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameraFps="), PixelStreamingCameraRateHertz);
+    PixelStreamingCameraWidth = FMath::Clamp(PixelStreamingCameraWidth, 160, 1920);
+    PixelStreamingCameraHeight = FMath::Clamp(PixelStreamingCameraHeight, 90, 1080);
+    PixelStreamingCameraRateHertz = FMath::Clamp(PixelStreamingCameraRateHertz, 1.0, 60.0);
+
+    FString Cameras;
+    if (FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameras="), Cameras))
+    {
+        Cameras.ReplaceInline(TEXT("+"), TEXT(","));
+        TArray<FString> Entries;
+        Cameras.ParseIntoArray(Entries, TEXT(","), true);
+        for (FString CameraId : Entries)
+        {
+            CameraId.TrimStartAndEndInline();
+            if (CameraId.Equals(TEXT("all"), ESearchCase::IgnoreCase)) bPixelStreamingAllManifestCameras = true;
+            else if (!CameraId.IsEmpty()) PixelStreamingRequestedCameras.Add(CameraId);
+        }
+    }
+    if (!PixelStreamingConnectionUrl.IsEmpty())
+    {
+        UE_LOG(LogBskUnreal, Display,
+            TEXT("RenderTarget Pixel Streaming enabled url=%s base=%s cameras=%s resolution=%dx%d fps=%.1f"),
+            *PixelStreamingConnectionUrl, *PixelStreamingBaseId,
+            bPixelStreamingAllManifestCameras ? TEXT("all") : *FString::Join(PixelStreamingRequestedCameras.Array(), TEXT(",")),
+            PixelStreamingCameraWidth, PixelStreamingCameraHeight, PixelStreamingCameraRateHertz);
+    }
+}
+
+bool ABskSceneController::IsPixelStreamingCameraRequested(const FString& CameraId) const
+{
+    return !PixelStreamingConnectionUrl.IsEmpty()
+        && (bPixelStreamingAllManifestCameras || PixelStreamingRequestedCameras.Contains(CameraId));
+}
+
+FString ABskSceneController::PixelStreamingIdForCamera(const FString& CameraId) const
+{
+    FString Safe = CameraId;
+    for (int32 Index = 0; Index < Safe.Len(); ++Index)
+    {
+        const TCHAR Character = Safe[Index];
+        if (!FChar::IsAlnum(Character) && Character != TEXT('_') && Character != TEXT('-')) Safe[Index] = TEXT('_');
+    }
+    return FString::Printf(TEXT("%s__%s"), *PixelStreamingBaseId, *Safe);
+}
+
+void ABskSceneController::ConfigurePixelStreamingCamera(AActor* Actor, const FBskCameraDefinition& Definition)
+{
+    if (!Actor || !IsPixelStreamingCameraRequested(Definition.CameraId)) return;
+
+    USceneCaptureComponent2D* Capture = PixelStreamingCameraCaptures.FindRef(Definition.CameraId);
+    if (!Capture)
+    {
+        Capture = NewObject<USceneCaptureComponent2D>(Actor,
+            MakeUniqueObjectName(Actor, USceneCaptureComponent2D::StaticClass(), TEXT("BskPixelStreamingCapture")));
+        if (!Capture) return;
+        Capture->SetupAttachment(Actor->GetRootComponent());
+        Capture->RegisterComponent();
+        Capture->SetRelativeTransform(FTransform::Identity);
+        Capture->bCaptureEveryFrame = false;
+        Capture->bCaptureOnMovement = false;
+        Capture->bAlwaysPersistRenderingState = true;
+        Capture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+        Capture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
+        PixelStreamingCameraCaptures.Add(Definition.CameraId, Capture);
+    }
+    Capture->FOVAngle = static_cast<float>(FMath::RadiansToDegrees(Definition.FieldOfViewRadians));
+    Capture->Activate();
+
+    UTextureRenderTarget2D* Target = PixelStreamingCameraTargets.FindRef(Definition.CameraId);
+    if (!Target || Target->SizeX != PixelStreamingCameraWidth || Target->SizeY != PixelStreamingCameraHeight)
+    {
+        Target = NewObject<UTextureRenderTarget2D>(this,
+            MakeUniqueObjectName(this, UTextureRenderTarget2D::StaticClass(), TEXT("BskPixelStreamingTarget")));
+        Target->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8;
+        Target->ClearColor = FLinearColor::Black;
+        Target->bAutoGenerateMips = false;
+        Target->InitAutoFormat(PixelStreamingCameraWidth, PixelStreamingCameraHeight);
+        Target->UpdateResourceImmediate(true);
+        PixelStreamingCameraTargets.Add(Definition.CameraId, Target);
+    }
+    Capture->TextureTarget = Target;
+
+    if (!PixelStreamingCameraStreamers.Contains(Definition.CameraId))
+    {
+        const FString StreamerId = PixelStreamingIdForCamera(Definition.CameraId);
+        TSharedPtr<IPixelStreaming2Streamer> Streamer = IPixelStreaming2Module::Get().CreateStreamer(StreamerId);
+        if (!Streamer)
+        {
+            UE_LOG(LogBskUnreal, Error, TEXT("Could not create Pixel Streaming camera streamer %s"), *StreamerId);
+            return;
+        }
+        TSharedPtr<IPixelStreaming2VideoProducer> Producer =
+            UE::PixelStreaming2::FVideoProducerRenderTarget::Create(Target);
+        if (!Producer)
+        {
+            IPixelStreaming2Module::Get().DeleteStreamer(Streamer);
+            UE_LOG(LogBskUnreal, Error, TEXT("Could not create RenderTarget producer for %s"), *StreamerId);
+            return;
+        }
+        Streamer->SetConnectionURL(PixelStreamingConnectionUrl);
+        Streamer->SetVideoProducer(Producer);
+        Streamer->StartStreaming();
+        PixelStreamingCameraStreamers.Add(Definition.CameraId, Streamer);
+        PixelStreamingCameraProducers.Add(Definition.CameraId, Producer);
+        PixelStreamingCameraNextCaptureSeconds.Add(Definition.CameraId, 0.0);
+        UE_LOG(LogBskUnreal, Display, TEXT("Started camera streamer %s for manifest camera %s"),
+            *StreamerId, *Definition.CameraId);
+    }
+
+    if (!PixelStreamingNewConnectionHandle.IsValid())
+    {
+        if (UPixelStreaming2Delegates* Delegates = UPixelStreaming2Delegates::Get())
+        {
+            PixelStreamingNewConnectionHandle = Delegates->OnNewConnectionNative.AddLambda(
+                [this](const FString& StreamerId, const FString& PlayerId)
+                {
+                    for (const TPair<FString, TSharedPtr<IPixelStreaming2Streamer>>& Pair : PixelStreamingCameraStreamers)
+                    {
+                        if (Pair.Value && PixelStreamingIdForCamera(Pair.Key) == StreamerId)
+                        {
+                            Pair.Value->ForceKeyFrame();
+                            UE_LOG(LogBskUnreal, Display, TEXT("Pixel Streaming camera peer %s connected to %s"),
+                                *PlayerId, *StreamerId);
+                            break;
+                        }
+                    }
+                });
+        }
+    }
+}
+
+void ABskSceneController::UpdatePixelStreamingCameraCaptures()
+{
+    if (!GetWorld() || PixelStreamingCameraCaptures.IsEmpty()) return;
+    const double Now = GetWorld()->GetRealTimeSeconds();
+    const double Period = 1.0 / PixelStreamingCameraRateHertz;
+    for (const TPair<FString, TObjectPtr<USceneCaptureComponent2D>>& Pair : PixelStreamingCameraCaptures)
+    {
+        if (!Pair.Value || !Pair.Value->TextureTarget) continue;
+        if (Now + UE_DOUBLE_SMALL_NUMBER < PixelStreamingCameraNextCaptureSeconds.FindRef(Pair.Key)) continue;
+        Pair.Value->CaptureScene();
+        PixelStreamingCameraNextCaptureSeconds.Add(Pair.Key, Now + Period);
+    }
+}
+
+void ABskSceneController::ShutdownPixelStreamingCameras()
+{
+    if (PixelStreamingNewConnectionHandle.IsValid())
+    {
+        if (UPixelStreaming2Delegates* Delegates = UPixelStreaming2Delegates::Get())
+        {
+            Delegates->OnNewConnectionNative.Remove(PixelStreamingNewConnectionHandle);
+        }
+        PixelStreamingNewConnectionHandle.Reset();
+    }
+    for (TPair<FString, TSharedPtr<IPixelStreaming2Streamer>>& Pair : PixelStreamingCameraStreamers)
+    {
+        if (!Pair.Value) continue;
+        Pair.Value->StopStreaming();
+        Pair.Value->SetVideoProducer(nullptr);
+        IPixelStreaming2Module::Get().DeleteStreamer(Pair.Value);
+    }
+    PixelStreamingCameraStreamers.Reset();
+    PixelStreamingCameraProducers.Reset();
+    PixelStreamingCameraNextCaptureSeconds.Reset();
+    PixelStreamingCameraCaptures.Reset();
+    PixelStreamingCameraTargets.Reset();
 }
 
 ABskSceneController::FObjectSpec ABskSceneController::ResolveSpec(const FBskRenderObjectState& State) const
@@ -1766,6 +1949,8 @@ void ABskSceneController::ConfigureCamera(AActor* Actor, const FBskCameraDefinit
     {
         CameraActor->GetCameraComponent()->FieldOfView = FieldOfViewDegrees;
     }
+
+    ConfigurePixelStreamingCamera(Actor, Definition);
 
     USceneCaptureComponent2D* Capture = CameraCaptureComponents.FindRef(Definition.CameraId);
     const bool bHasDataProducts = !CaptureProductOverride.IsEmpty() || !Definition.CaptureProducts.IsEmpty();

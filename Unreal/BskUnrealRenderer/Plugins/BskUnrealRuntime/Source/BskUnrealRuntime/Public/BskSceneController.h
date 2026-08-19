@@ -14,6 +14,8 @@ class ASkyAtmosphere;
 class USceneCaptureComponent2D;
 class UStaticMeshComponent;
 class UTextureRenderTarget2D;
+class IPixelStreaming2Streamer;
+class IPixelStreaming2VideoProducer;
 class IBskCaptureProvider;
 class FBskCaptureNetworkSender;
 class FBskCaptureDiskWriter;
@@ -138,6 +140,12 @@ private:
     AActor* SpawnCamera(const FBskCameraDefinition& Definition);
     void ConfigureCamera(AActor* Actor, const FBskCameraDefinition& Definition);
     void UpdatePictureInPictureCaptures();
+    void ConfigurePixelStreamingOutput();
+    void ConfigurePixelStreamingCamera(AActor* Actor, const FBskCameraDefinition& Definition);
+    void UpdatePixelStreamingCameraCaptures();
+    void ShutdownPixelStreamingCameras();
+    bool IsPixelStreamingCameraRequested(const FString& CameraId) const;
+    FString PixelStreamingIdForCamera(const FString& CameraId) const;
     void UpdateAuthoritativeDataProductCaptures(const FBskRenderFrame& AuthoritativeFrame);
     bool CaptureCameraDataProducts(const FBskCaptureRequest& Request, FString& OutError);
     void ConfigureCaptureOutput();
@@ -175,6 +183,14 @@ private:
     TMap<FString, TObjectPtr<USceneCaptureComponent2D>> CameraSegmentationCaptureComponents;
     UPROPERTY(Transient)
     TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraSegmentationRenderTargets;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<USceneCaptureComponent2D>> PixelStreamingCameraCaptures;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<UTextureRenderTarget2D>> PixelStreamingCameraTargets;
+    TMap<FString, TSharedPtr<IPixelStreaming2Streamer>> PixelStreamingCameraStreamers;
+    TMap<FString, TSharedPtr<IPixelStreaming2VideoProducer>> PixelStreamingCameraProducers;
+    TMap<FString, double> PixelStreamingCameraNextCaptureSeconds;
+    FDelegateHandle PixelStreamingNewConnectionHandle;
     TMap<FString, double> CameraNextCaptureSeconds;
     TMap<FString, int64> CameraNextDataCaptureSimulationNanoseconds;
     TMap<FString, bool> CameraPictureInPictureVisibility;
@@ -240,6 +256,13 @@ private:
     int32 CaptureNetworkPort = 0;
     double CaptureRateOverrideHertz = 0.0;
     double PreviewRateOverrideHertz = 0.0;
+    FString PixelStreamingConnectionUrl;
+    FString PixelStreamingBaseId = TEXT("BskRenderer");
+    TSet<FString> PixelStreamingRequestedCameras;
+    bool bPixelStreamingAllManifestCameras = false;
+    int32 PixelStreamingCameraWidth = 640;
+    int32 PixelStreamingCameraHeight = 360;
+    double PixelStreamingCameraRateHertz = 30.0;
     TArray<FString> CaptureProductOverride;
     int64 CaptureSequence = 0;
     TSharedPtr<IBskCaptureProvider> BuiltinCaptureProvider;
