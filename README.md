@@ -8,6 +8,7 @@
 Adapters/bsk_render_adapter/             通用 Python/BSK 发送端
 Unreal/BskUnrealRenderer/                UE 5.6 项目与 Runtime C++ 插件
 test/model/arm/universal_robots_ur5e/    BSD-3-Clause UR5e 集成测试资产
+test/model/spacecraft_and_arm/           CubeSat + SO-101 MJCF/STL 与抓取场景
 scripts/                                 仓库级统一命令
 ```
 
@@ -49,11 +50,11 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 # UR5e/MJScene：六个关节依次平滑转动 20 度并保持
 .\scripts\run_ur5e.ps1 -NormalMode preserve -Duration 22 -SimulationRate 1 -JointAngleDegrees 20
 
-# 外部 CubeSat + SO-101：自动准备 STL 并实时显示自由漂浮多刚体动力学
-.\scripts\run_spacecraft_arm.ps1 -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm -Duration 10 -SimulationRate 1
+# 内置 CubeSat + SO-101：自动准备 STL 并实时显示自由漂浮多刚体动力学
+.\scripts\run_spacecraft_arm.ps1 -Duration 10 -SimulationRate 1
 
 # 同一模型的原生 PID/纯接触抓取场景
-.\scripts\run_spacecraft_arm_grasp.ps1 -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm -Duration 10 -SimulationRate 1 -KeepRendererOpen
+.\scripts\run_spacecraft_arm_grasp.ps1 -Duration 10 -SimulationRate 1 -KeepRendererOpen
 ```
 
 原生抓取命令会注册 CubeSat 机身总览相机和 MJCF 中定义的 SO-101 腕部相机，
@@ -65,7 +66,6 @@ Set-Location E:\mujoco_demo\space_sim_UE_adapter
 ```powershell
 Set-Location E:\mujoco_demo\space_sim_UE_adapter
 .\scripts\run_orbital_grasp.ps1 `
-  -ModelRoot E:\mujoco_demo\test\model\spacecraft_and_arm `
   -Duration 34 -SimulationRate 1 -KeepRendererOpen
 ```
 

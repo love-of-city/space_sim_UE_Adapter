@@ -12,7 +12,8 @@
 /run_vizard_demo.ps1
 /*.log
 
-# Keep the redistributable UR5e integration fixture; ignore other local tests.
+# Keep the redistributable model fixtures required by the runnable demos;
+# ignore other local tests.
 /test/*
 !/test/model/
 /test/model/*
@@ -20,6 +21,8 @@
 /test/model/arm/*
 !/test/model/arm/universal_robots_ur5e/
 !/test/model/arm/universal_robots_ur5e/**
+!/test/model/spacecraft_and_arm/
+!/test/model/spacecraft_and_arm/**
 
 # Unreal Engine generated state.
 **/.vs/
