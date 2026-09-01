@@ -27,6 +27,18 @@ MJCF 的 ASCII/Binary STL 资产准备说明见 [STL_MESHES.md](Unreal/BskUnreal
 
 UE 引擎、Conda 环境和 Basilisk 上游源码不进入本仓库。Demo 8 会读取同级工作区中的 `basilisk/examples/mujoco/scenarioMJSceneVizard.py`，但不会修改它。
 
+## 地球与深空环境
+
+`Unreal/BskUnrealRenderer/Content/Planets` 内置 8K 地球昼夜、法线、高光、云层和银河纹理。运行时不加载静态 `.umap`，而是在空白 Entry 地图中由 `ABskSceneController` 动态创建：
+
+- 地球三层和星空均使用 MyProject2 原始 Modeling Tools Sphere、材质、纹理、组件渲染标志和 `1.001` 球层比例；Runtime 会补偿原网格位于南极点的 Pivot，并按仿真半径重新缩放。
+- 星空只使用 MyProject2 的 `M_Stars + 8k_stars_milky_way` 球体，不再叠加额外实例亮星；Celestial Vault 仅作为资产加载失败时的回退。
+- 项目渲染设置同步为 MyProject2 的 Lumen GI/Reflection、Ray Tracing、Virtual Shadow Maps、自动曝光和局部曝光，且不再创建手动曝光体或观察补光。
+- 遥操作 manifest 没有 Earth 时显示 `bsk_unreal_scene.json` 配置的视觉地球；一旦 manifest 注册 Earth，视觉地球会自动隐藏，位置、姿态和半径改由权威星历帧驱动。
+- DirectionalLight 的颜色、阴影、光源角等视觉属性复现 MyProject2，但保持 Movable；Sun 星历仍逐帧驱动方向和距离照度规律，没有星历时才使用配置中的固定方向。
+
+环境开关、原始 Sphere/材质路径、视觉地球位置和球层比例位于 `Unreal/BskUnrealRenderer/Config/bsk_unreal_scene.json` 的 `scene` 节点。二进制资产使用 Git LFS，首次拉取后应执行 `git lfs pull`。
+
 ## 统一命令
 
 ```powershell

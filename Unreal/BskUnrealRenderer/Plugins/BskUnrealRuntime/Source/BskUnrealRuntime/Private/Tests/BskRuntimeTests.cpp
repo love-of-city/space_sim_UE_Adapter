@@ -7,6 +7,7 @@
 #include "BskRenderWorldSubsystem.h"
 #include "BskSceneController.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture2D.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/AutomationTest.h"
 
@@ -359,6 +360,38 @@ bool FBskOfficialCelestialAssetsTest::RunTest(const FString& Parameters)
     TestNotNull(
         TEXT("Epic star material"),
         LoadObject<UMaterialInterface>(nullptr, TEXT("/CelestialVault/Materials/MI_Stars.MI_Stars")));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskTexturedEarthEnvironmentAssetsTest,
+    "BskUnreal.Assets.TexturedEarthEnvironment",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskTexturedEarthEnvironmentAssetsTest::RunTest(const FString& Parameters)
+{
+    TestNotNull(TEXT("MyProject2 generated sphere mesh"),
+        LoadObject<UStaticMesh>(nullptr, TEXT("/Game/_GENERATED/Hyperlovimia/Sphere_732702C4.Sphere_732702C4")));
+    TestNotNull(TEXT("textured Earth surface material"),
+        LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Planets/Earth/M_Earth.M_Earth")));
+    TestNotNull(TEXT("textured Earth cloud material"),
+        LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Planets/Earth/M_Clouds.M_Clouds")));
+    TestNotNull(TEXT("textured Earth atmosphere-shell material"),
+        LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Planets/Earth/M_Atmosphere.M_Atmosphere")));
+    TestNotNull(TEXT("textured Milky Way material"),
+        LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/Planets/Stars/M_Stars.M_Stars")));
+    TestNotNull(TEXT("Earth day texture"),
+        LoadObject<UTexture2D>(nullptr, TEXT("/Game/Planets/Earth/8k_earth_daymap.8k_earth_daymap")));
+    TestNotNull(TEXT("Earth night texture"),
+        LoadObject<UTexture2D>(nullptr, TEXT("/Game/Planets/Earth/8k_earth_nightmap.8k_earth_nightmap")));
+    TestNotNull(TEXT("Earth normal texture"),
+        LoadObject<UTexture2D>(nullptr, TEXT("/Game/Planets/Earth/8k_earth_normal_map.8k_earth_normal_map")));
+    TestNotNull(TEXT("Earth specular texture"),
+        LoadObject<UTexture2D>(nullptr, TEXT("/Game/Planets/Earth/8k_earth_specular_map.8k_earth_specular_map")));
+    TestNotNull(TEXT("Earth cloud texture"),
+        LoadObject<UTexture2D>(nullptr, TEXT("/Game/Planets/Earth/8k_earth_clouds.8k_earth_clouds")));
+    TestNotNull(TEXT("Milky Way texture"),
+        LoadObject<UTexture2D>(nullptr, TEXT("/Game/Planets/Stars/8k_stars_milky_way.8k_stars_milky_way")));
     return true;
 }
 

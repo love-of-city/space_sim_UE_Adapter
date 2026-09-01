@@ -936,14 +936,29 @@ bool ABskSceneController::LoadConfiguration()
         if ((*Scene)->TryGetNumberField(TEXT("celestial_vault_radius_km"), Number)) CelestialVaultRadiusKilometers = FMath::Clamp(Number, 10000.0, 500000.0);
         if ((*Scene)->TryGetNumberField(TEXT("celestial_background_intensity"), Number)) CelestialBackgroundIntensity = FMath::Clamp(Number, 0.0, 8.0);
         if ((*Scene)->TryGetNumberField(TEXT("sun_intensity_lux"), Number)) SunIntensityLux = FMath::Max(0.0, Number);
+        if ((*Scene)->TryGetNumberField(TEXT("sun_illuminance_scale"), Number)) SunIlluminanceScale = FMath::Max(0.0, Number);
         if ((*Scene)->TryGetNumberField(TEXT("fill_light_intensity_lux"), Number)) FillLightIntensityLux = FMath::Max(0.0, Number);
         if ((*Scene)->TryGetNumberField(TEXT("material_exposure_bias"), Number)) MaterialExposureBias = FMath::Clamp(Number, -8.0, 8.0);
+        if ((*Scene)->TryGetNumberField(TEXT("decorative_earth_radius_m"), Number)) DecorativeEarthRadiusMeters = FMath::Max(1.0, Number);
+        if ((*Scene)->TryGetNumberField(TEXT("earth_cloud_scale"), Number)) EarthCloudScale = FMath::Clamp(Number, 1.0, 1.2);
+        if ((*Scene)->TryGetNumberField(TEXT("earth_atmosphere_scale"), Number)) EarthAtmosphereScale = FMath::Clamp(Number, EarthCloudScale, 1.5);
         (*Scene)->TryGetBoolField(TEXT("use_official_celestial_assets"), bUseOfficialCelestialAssets);
+        (*Scene)->TryGetBoolField(TEXT("use_textured_star_sphere"), bUseTexturedStarSphere);
         (*Scene)->TryGetBoolField(TEXT("use_earth_sky_atmosphere"), bUseEarthSkyAtmosphere);
+        (*Scene)->TryGetBoolField(TEXT("use_manual_exposure"), bUseManualExposure);
+        (*Scene)->TryGetBoolField(TEXT("decorative_earth_enabled"), bEnableDecorativeEarth);
+        (*Scene)->TryGetStringField(TEXT("textured_star_mesh"), TexturedStarMeshPath);
+        (*Scene)->TryGetStringField(TEXT("textured_star_material"), TexturedStarMaterialPath);
+        (*Scene)->TryGetStringField(TEXT("earth_sphere_mesh"), EarthSphereMeshPath);
+        (*Scene)->TryGetStringField(TEXT("earth_surface_material"), EarthSurfaceMaterialPath);
+        (*Scene)->TryGetStringField(TEXT("earth_cloud_material"), EarthCloudMaterialPath);
+        (*Scene)->TryGetStringField(TEXT("earth_atmosphere_material"), EarthAtmosphereMaterialPath);
         JsonVector3(*Scene, TEXT("camera_position_m"), CameraPositionMeters);
         JsonVector3(*Scene, TEXT("camera_look_at_m"), CameraLookAtMeters);
+        JsonVector3(*Scene, TEXT("decorative_earth_position_m"), DecorativeEarthPositionMeters);
         FVector3d Rotation;
         if (JsonVector3(*Scene, TEXT("sun_rotation_deg"), Rotation)) SunRotation = FRotator(Rotation.X, Rotation.Y, Rotation.Z);
+        if (JsonVector3(*Scene, TEXT("decorative_earth_rotation_deg"), Rotation)) DecorativeEarthRotation = FRotator(Rotation.X, Rotation.Y, Rotation.Z);
         (*Scene)->TryGetStringField(TEXT("time_mode"), TimeMode);
         double InterpolationDelayMs = InterpolationDelaySeconds * 1000.0;
         double MaxExtrapolationMs = MaxExtrapolationSeconds * 1000.0;
@@ -1434,6 +1449,25 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
             }
         }
     }
+    const bool bManifestHasEarth = Manifest.CelestialBodies.ContainsByPredicate([](const FBskCelestialBodyDefinition& Definition)
+    {
+        return Definition.BodyId.Equals(TEXT("earth"), ESearchCase::IgnoreCase) ||
+            Definition.DisplayName.Equals(TEXT("earth"), ESearchCase::IgnoreCase);
+    });
+    if (DecorativeEarthActor)
+    {
+        DecorativeEarthActor->SetActorHiddenInGame(bManifestHasEarth);
+        UE_LOG(LogBskUnreal, Display, TEXT("Decorative Earth %s because the manifest %s an ephemeris Earth"),
+            bManifestHasEarth ? TEXT("hidden") : TEXT("visible"),
+            bManifestHasEarth ? TEXT("contains") : TEXT("does not contain"));
+    }
+    for (const TPair<FString, TObjectPtr<AActor>>& Pair : CelestialActors)
+    {
+        if (Pair.Key.Equals(TEXT("earth"), ESearchCase::IgnoreCase) && Pair.Value)
+        {
+            Pair.Value->SetActorHiddenInGame(!bManifestHasEarth);
+        }
+    }
     for (const FBskCelestialBodyDefinition& Definition : Manifest.CelestialBodies)
     {
         ManifestCelestialBodies.Add(Definition.BodyId, Definition);
@@ -1684,6 +1718,82 @@ AActor* ABskSceneController::SpawnManifestObject(const FBskObjectDefinition& Def
     return Actor;
 }
 
+AActor* ABskSceneController::SpawnTexturedEarth(const FString& ActorName, double RadiusMeters)
+{
+    UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, *EarthSphereMeshPath);
+    UMaterialInterface* SurfaceMaterial = LoadObject<UMaterialInterface>(nullptr, *EarthSurfaceMaterialPath);
+    UMaterialInterface* CloudMaterial = LoadObject<UMaterialInterface>(nullptr, *EarthCloudMaterialPath);
+    UMaterialInterface* AtmosphereMaterial = LoadObject<UMaterialInterface>(nullptr, *EarthAtmosphereMaterialPath);
+    if (!SphereMesh || !SurfaceMaterial)
+    {
+        UE_LOG(LogBskUnreal, Warning,
+            TEXT("Textured Earth assets unavailable mesh=%s surface=%s; using the celestial fallback"),
+            SphereMesh ? TEXT("ok") : TEXT("missing"), SurfaceMaterial ? TEXT("ok") : TEXT("missing"));
+        return nullptr;
+    }
+
+    const FBoxSphereBounds MeshBounds = SphereMesh->GetBounds();
+    const double SourceRadiusCentimeters = FMath::Max(
+        static_cast<double>(MeshBounds.BoxExtent.GetMax()), UE_DOUBLE_SMALL_NUMBER);
+    const FVector SourceCenterCentimeters = MeshBounds.Origin;
+    const double TargetRadiusCentimeters = FMath::Max(RadiusMeters, 1.0) * Converter.GetCentimetersPerMeter();
+
+    FActorSpawnParameters Params;
+    Params.Name = MakeUniqueObjectName(GetWorld(), AActor::StaticClass(), SafeActorName(ActorName));
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    AActor* Actor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, Params);
+    if (!Actor) return nullptr;
+
+    USceneComponent* Root = NewObject<USceneComponent>(Actor, TEXT("EarthRoot"));
+    Root->SetMobility(EComponentMobility::Movable);
+    Root->RegisterComponent();
+    Actor->SetRootComponent(Root);
+
+    auto AddLayer = [Actor, Root, SphereMesh, SourceRadiusCentimeters, SourceCenterCentimeters, TargetRadiusCentimeters](
+        const TCHAR* Name, UMaterialInterface* Material, double ScaleRatio)
+    {
+        if (!Material) return static_cast<UStaticMeshComponent*>(nullptr);
+        const double MeshScale = TargetRadiusCentimeters * ScaleRatio / SourceRadiusCentimeters;
+        UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(Actor, Name);
+        // The original MyProject2 actors are static. Runtime celestial actors must
+        // remain movable, but all visual component flags match the source map.
+        Component->SetMobility(EComponentMobility::Movable);
+        Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        Component->SetCastShadow(true);
+        Component->SetAffectDistanceFieldLighting(true);
+        Component->SetAffectDynamicIndirectLighting(true);
+        Component->SetReceivesDecals(true);
+        Component->SetRenderInMainPass(true);
+        Component->SetRenderInDepthPass(true);
+        Component->SetCanEverAffectNavigation(false);
+        Component->SetStaticMesh(SphereMesh);
+        Component->SetMaterial(0, Material);
+        Component->SetRelativeScale3D(FVector(MeshScale));
+        // The migrated Modeling Tools sphere has its pivot at the south pole.
+        // Offset its imported bounds origin so the actor transform remains the
+        // Basilisk/MJScene celestial centre while preserving the exact source mesh.
+        Component->SetRelativeLocation(-SourceCenterCentimeters * MeshScale);
+        Component->SetTranslucentSortPriority(0);
+        Component->SetupAttachment(Root);
+        Component->RegisterComponent();
+        return Component;
+    };
+
+    AddLayer(TEXT("EarthSurface"), SurfaceMaterial, 1.0);
+    if (!AddLayer(TEXT("EarthClouds"), CloudMaterial, EarthCloudScale))
+    {
+        UE_LOG(LogBskUnreal, Warning, TEXT("Earth cloud material unavailable: %s"), *EarthCloudMaterialPath);
+    }
+    if (!AddLayer(TEXT("EarthAtmosphereShell"), AtmosphereMaterial, EarthAtmosphereScale))
+    {
+        UE_LOG(LogBskUnreal, Warning, TEXT("Earth atmosphere-shell material unavailable: %s"), *EarthAtmosphereMaterialPath);
+    }
+    UE_LOG(LogBskUnreal, Display,
+        TEXT("Created MyProject2-configured Earth %s mesh=%s radius=%.3f km clouds=%.4fx atmosphere=%.4fx"),
+        *ActorName, *EarthSphereMeshPath, RadiusMeters / 1000.0, EarthCloudScale, EarthAtmosphereScale);
+    return Actor;
+}
+
 AActor* ABskSceneController::SpawnCelestialBody(const FBskCelestialBodyDefinition& Definition)
 {
     if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
@@ -1725,15 +1835,23 @@ AActor* ABskSceneController::SpawnCelestialBody(const FBskCelestialBodyDefinitio
         UE_LOG(LogBskUnreal, Warning, TEXT("Epic Celestial Vault Moon assets unavailable; using the BSK fallback sphere"));
     }
 
-    FObjectSpec Spec;
-    Spec.PlaceholderShape = TEXT("sphere");
-    const double DiameterMeters = 2.0 * FMath::Max(Definition.EquatorialRadiusMeters, 1.0);
-    Spec.SizeMeters = FVector3d(DiameterMeters, DiameterMeters, DiameterMeters * Definition.PolarRadiusRatio);
-    if (Definition.BodyId.Equals(TEXT("earth"), ESearchCase::IgnoreCase)) Spec.Color = FLinearColor(0.03f, 0.16f, 0.65f);
-    else if (Definition.BodyId.Equals(TEXT("moon"), ESearchCase::IgnoreCase)) Spec.Color = FLinearColor(0.45f, 0.45f, 0.48f);
-    else if (Definition.bLuminous) Spec.Color = FLinearColor(3.0f, 2.5f, 1.2f);
-    else Spec.Color = FLinearColor(0.35f, 0.25f, 0.18f);
-    AActor* Actor = SpawnPlaceholder(FString::Printf(TEXT("celestial_%s"), *Definition.BodyId), Spec);
+    AActor* Actor = nullptr;
+    if (Definition.BodyId.Equals(TEXT("earth"), ESearchCase::IgnoreCase))
+    {
+        Actor = SpawnTexturedEarth(TEXT("celestial_earth"), Definition.EquatorialRadiusMeters);
+    }
+    if (!Actor)
+    {
+        FObjectSpec Spec;
+        Spec.PlaceholderShape = TEXT("sphere");
+        const double DiameterMeters = 2.0 * FMath::Max(Definition.EquatorialRadiusMeters, 1.0);
+        Spec.SizeMeters = FVector3d(DiameterMeters, DiameterMeters, DiameterMeters * Definition.PolarRadiusRatio);
+        if (Definition.BodyId.Equals(TEXT("earth"), ESearchCase::IgnoreCase)) Spec.Color = FLinearColor(0.03f, 0.16f, 0.65f);
+        else if (Definition.BodyId.Equals(TEXT("moon"), ESearchCase::IgnoreCase)) Spec.Color = FLinearColor(0.45f, 0.45f, 0.48f);
+        else if (Definition.bLuminous) Spec.Color = FLinearColor(3.0f, 2.5f, 1.2f);
+        else Spec.Color = FLinearColor(0.35f, 0.25f, 0.18f);
+        Actor = SpawnPlaceholder(FString::Printf(TEXT("celestial_%s"), *Definition.BodyId), Spec);
+    }
     if (Actor) Actor->Tags.AddUnique(FName(*FString::Printf(TEXT("BSK.Celestial.%s"), *Definition.BodyId)));
 
     if (Actor && bUseEarthSkyAtmosphere && Definition.BodyId.Equals(TEXT("earth"), ESearchCase::IgnoreCase) && !EarthAtmosphere)
@@ -2711,7 +2829,7 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
                     BaseIlluminance,
                     Definition->LightReferenceDistanceMeters,
                     State.PositionMeters.Length());
-                SunLight->GetLightComponent()->SetIntensity(static_cast<float>(Illuminance));
+                SunLight->GetLightComponent()->SetIntensity(static_cast<float>(Illuminance * SunIlluminanceScale));
                 bEphemerisDirectionalLightActive = true;
             }
         }
@@ -2862,6 +2980,67 @@ void ABskSceneController::DrawOrbitLines(const FBskRenderFrame& Frame) const
     }
 }
 
+bool ABskSceneController::CreateTexturedStarSphere()
+{
+    if (!bUseTexturedStarSphere) return false;
+    UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, *TexturedStarMeshPath);
+    UMaterialInterface* StarMaterial = LoadObject<UMaterialInterface>(nullptr, *TexturedStarMaterialPath);
+    if (!SphereMesh || !StarMaterial)
+    {
+        UE_LOG(LogBskUnreal, Warning,
+            TEXT("Textured star-sphere assets unavailable mesh=%s material=%s; falling back to Celestial Vault"),
+            SphereMesh ? TEXT("ok") : TEXT("missing"), StarMaterial ? TEXT("ok") : TEXT("missing"));
+        return false;
+    }
+
+    const FBoxSphereBounds MeshBounds = SphereMesh->GetBounds();
+    const double SourceRadiusCentimeters = FMath::Max(
+        static_cast<double>(MeshBounds.BoxExtent.GetMax()), UE_DOUBLE_SMALL_NUMBER);
+    const double TargetRadiusCentimeters = CelestialVaultRadiusKilometers * 100000.0;
+    const double MeshScale = TargetRadiusCentimeters / SourceRadiusCentimeters;
+
+    DeepSkyComponent = NewObject<UStaticMeshComponent>(this, TEXT("TexturedStarSphereBackground"));
+    DeepSkyComponent->SetupAttachment(GetRootComponent());
+    DeepSkyComponent->SetMobility(EComponentMobility::Movable);
+    DeepSkyComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    DeepSkyComponent->SetCastShadow(true);
+    DeepSkyComponent->SetAffectDistanceFieldLighting(true);
+    DeepSkyComponent->SetAffectDynamicIndirectLighting(true);
+    DeepSkyComponent->SetReceivesDecals(true);
+    DeepSkyComponent->SetRenderInMainPass(true);
+    DeepSkyComponent->SetRenderInDepthPass(true);
+    DeepSkyComponent->SetTranslucentSortPriority(0);
+    DeepSkyComponent->SetCanEverAffectNavigation(false);
+    DeepSkyComponent->SetStaticMesh(SphereMesh);
+    DeepSkyComponent->SetMaterial(0, StarMaterial);
+    DeepSkyComponent->SetRelativeScale3D(FVector(MeshScale));
+    DeepSkyComponent->SetRelativeLocation(-MeshBounds.Origin * MeshScale);
+    DeepSkyComponent->RegisterComponent();
+    UE_LOG(LogBskUnreal, Display,
+        TEXT("Using MyProject2 star sphere mesh=%s material=%s at %.0f km radius"),
+        *TexturedStarMeshPath, *TexturedStarMaterialPath, CelestialVaultRadiusKilometers);
+    return true;
+}
+
+void ABskSceneController::CreateDecorativeEarth()
+{
+    if (!bEnableDecorativeEarth) return;
+    DecorativeEarthActor = SpawnTexturedEarth(TEXT("decorative_earth"), DecorativeEarthRadiusMeters);
+    if (!DecorativeEarthActor)
+    {
+        UE_LOG(LogBskUnreal, Warning, TEXT("Decorative Earth was requested but its textured assets could not be created"));
+        return;
+    }
+    DecorativeEarthActor->SetActorLocation(
+        FVector(Converter.LocalMetersToUnrealCentimeters(DecorativeEarthPositionMeters)),
+        false, nullptr, ETeleportType::TeleportPhysics);
+    DecorativeEarthActor->SetActorRotation(DecorativeEarthRotation);
+    DecorativeEarthActor->Tags.AddUnique(FName(TEXT("BSK.Environment.DecorativeEarth")));
+    DecorativeEarthActor->Tags.AddUnique(FName(TEXT("BSK.Semantic.earth")));
+    UE_LOG(LogBskUnreal, Display, TEXT("Decorative Earth enabled position_m=%s rotation=%s"),
+        *DecorativeEarthPositionMeters.ToString(), *DecorativeEarthRotation.ToCompactString());
+}
+
 void ABskSceneController::CreateEnvironment()
 {
     FActorSpawnParameters Params;
@@ -2869,13 +3048,37 @@ void ABskSceneController::CreateEnvironment()
     if (ADirectionalLight* Sun = GetWorld()->SpawnActor<ADirectionalLight>(ADirectionalLight::StaticClass(), FVector::ZeroVector, SunRotation, Params))
     {
         SunLight = Sun;
-        Sun->GetLightComponent()->SetIntensity(static_cast<float>(SunIntensityLux));
-        Sun->GetLightComponent()->SetCastShadows(true);
-        if (UDirectionalLightComponent* Directional = Cast<UDirectionalLightComponent>(Sun->GetLightComponent()))
+        ULightComponent* Light = Sun->GetLightComponent();
+        // Reproduce the MyProject2 DirectionalLight visual properties. Mobility,
+        // rotation, and runtime intensity remain dynamic so Basilisk/SPICE can
+        // continue to drive the illumination direction and distance law.
+        Light->SetMobility(EComponentMobility::Movable);
+        Light->SetIntensity(static_cast<float>(SunIntensityLux));
+        Light->SetLightColor(FLinearColor::White);
+        Light->SetCastShadows(true);
+        Light->CastStaticShadows = true;
+        Light->CastDynamicShadows = true;
+        Light->SetCastVolumetricShadow(true);
+        Light->SetAffectTranslucentLighting(true);
+        Light->SetTransmission(false);
+        Light->SetUseTemperature(false);
+        Light->SetTemperature(6500.0f);
+        Light->SetIndirectLightingIntensity(1.0f);
+        Light->SetVolumetricScatteringIntensity(1.0f);
+        Light->SetSpecularScale(1.0f);
+        Light->SetShadowBias(0.5f);
+        Light->SetShadowSlopeBias(0.5f);
+        Light->ContactShadowLength = 0.0f;
+        Light->ContactShadowCastingIntensity = 1.0f;
+        Light->ContactShadowNonCastingIntensity = 0.0f;
+        if (UDirectionalLightComponent* Directional = Cast<UDirectionalLightComponent>(Light))
         {
+            Directional->SetLightSourceAngle(0.5357f);
+            Directional->SetLightSourceSoftAngle(0.0f);
             Directional->SetAtmosphereSunLight(true);
             Directional->SetAtmosphereSunLightIndex(0);
-            Directional->bPerPixelAtmosphereTransmittance = true;
+            Directional->bPerPixelAtmosphereTransmittance = false;
+            Directional->CloudScatteredLuminanceScale = FLinearColor::White;
         }
     }
 
@@ -2894,22 +3097,26 @@ void ABskSceneController::CreateEnvironment()
         }
     }
 
-    // A fixed exposure makes protocol material colours reproducible between a
-    // black space view, a bright planet view, screenshots, and live rendering.
-    if (APostProcessVolume* Volume = GetWorld()->SpawnActor<APostProcessVolume>(APostProcessVolume::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params))
+    // MyProject2 relies on project auto/local exposure and has no overriding
+    // PostProcessVolume. Keep the manual path available for other deployments.
+    if (bUseManualExposure)
     {
-        ExposureVolume = Volume;
-        Volume->bUnbound = true;
-        Volume->Priority = 1000.0f;
-        Volume->Settings.bOverride_AutoExposureMethod = true;
-        Volume->Settings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
-        Volume->Settings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
-        Volume->Settings.AutoExposureApplyPhysicalCameraExposure = false;
-        Volume->Settings.bOverride_AutoExposureBias = true;
-        Volume->Settings.AutoExposureBias = static_cast<float>(MaterialExposureBias);
+        if (APostProcessVolume* Volume = GetWorld()->SpawnActor<APostProcessVolume>(APostProcessVolume::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params))
+        {
+            ExposureVolume = Volume;
+            Volume->bUnbound = true;
+            Volume->Priority = 1000.0f;
+            Volume->Settings.bOverride_AutoExposureMethod = true;
+            Volume->Settings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
+            Volume->Settings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+            Volume->Settings.AutoExposureApplyPhysicalCameraExposure = false;
+            Volume->Settings.bOverride_AutoExposureBias = true;
+            Volume->Settings.AutoExposureBias = static_cast<float>(MaterialExposureBias);
+        }
     }
 
-    if (bUseOfficialCelestialAssets)
+    const bool bUsingTexturedStarSphere = CreateTexturedStarSphere();
+    if (!bUsingTexturedStarSphere && bUseOfficialCelestialAssets)
     {
         UStaticMesh* VaultMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/CelestialVault/Meshes/SM_CelestialVault.SM_CelestialVault"));
         UMaterialInterface* VaultMaterial = LoadObject<UMaterialInterface>(nullptr, TEXT("/CelestialVault/Materials/MI_CelestialVault.MI_CelestialVault"));
@@ -2936,6 +3143,16 @@ void ABskSceneController::CreateEnvironment()
         {
             UE_LOG(LogBskUnreal, Warning, TEXT("Epic Celestial Vault background assets unavailable; keeping black background"));
         }
+    }
+
+    CreateDecorativeEarth();
+
+    // MyProject2 uses only its textured star sphere and no additional star
+    // instances. A positive StarCount remains an optional renderer extension.
+    if (StarCount <= 0)
+    {
+        UE_LOG(LogBskUnreal, Display, TEXT("No supplemental star instances requested; matching MyProject2"));
+        return;
     }
 
     UInstancedStaticMeshComponent* Stars = NewObject<UInstancedStaticMeshComponent>(this, TEXT("StarField"));
@@ -2987,5 +3204,7 @@ void ABskSceneController::CreateEnvironment()
             Stars->AddInstance(FTransform(FQuat::Identity, Direction * RadiusCm, FVector(Scale)));
         }
     }
-    UE_LOG(LogBskUnreal, Display, TEXT("Created %d %s stars"), StarCount, bUsingOfficialStars ? TEXT("Epic Celestial Vault") : TEXT("fallback"));
+    UE_LOG(LogBskUnreal, Display, TEXT("Created %d %s stars over %s background"), StarCount,
+        bUsingOfficialStars ? TEXT("Epic Celestial Vault") : TEXT("fallback"),
+        bUsingTexturedStarSphere ? TEXT("textured Milky Way") : TEXT("Celestial Vault/black"));
 }

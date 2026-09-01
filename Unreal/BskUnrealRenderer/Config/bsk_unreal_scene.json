@@ -31,33 +31,86 @@
   },
   "scene": {
     "use_official_celestial_assets": true,
-    "use_earth_sky_atmosphere": true,
+    "use_earth_sky_atmosphere": false,
     "celestial_vault_radius_km": 500000.0,
     "celestial_background_intensity": 0.12,
-    "sun_intensity_lux": 8.0,
-    "fill_light_intensity_lux": 3.0,
-    "material_exposure_bias": -1.0,
-    "sun_rotation_deg": [-25.0, -35.0, 15.0],
-    "star_count": 900,
+    "sun_intensity_lux": 1.0,
+    "fill_light_intensity_lux": 0.0,
+    "material_exposure_bias": 0.0,
+    "sun_rotation_deg": [
+      -25.0,
+      -35.0,
+      15.0
+    ],
+    "star_count": 0,
     "star_radius_m": 250.0,
-    "camera_position_m": [10.0, -16.0, 8.0],
-    "camera_look_at_m": [0.0, 3.0, 0.0],
+    "camera_position_m": [
+      10.0,
+      -16.0,
+      8.0
+    ],
+    "camera_look_at_m": [
+      0.0,
+      3.0,
+      0.0
+    ],
     "time_mode": "interpolated",
     "interpolation_delay_ms": 100.0,
-    "max_extrapolation_ms": 100.0
+    "max_extrapolation_ms": 100.0,
+    "use_textured_star_sphere": true,
+    "textured_star_material": "/Game/Planets/Stars/M_Stars.M_Stars",
+    "earth_surface_material": "/Game/Planets/Earth/M_Earth.M_Earth",
+    "earth_cloud_material": "/Game/Planets/Earth/M_Clouds.M_Clouds",
+    "earth_atmosphere_material": "/Game/Planets/Earth/M_Atmosphere.M_Atmosphere",
+    "earth_cloud_scale": 1.001,
+    "earth_atmosphere_scale": 1.001,
+    "decorative_earth_enabled": true,
+    "decorative_earth_radius_m": 6371000.0,
+    "decorative_earth_position_m": [
+      20000000.0,
+      14000000.0,
+      5000000.0
+    ],
+    "decorative_earth_rotation_deg": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "use_manual_exposure": false,
+    "textured_star_mesh": "/Game/_GENERATED/Hyperlovimia/Sphere_732702C4.Sphere_732702C4",
+    "earth_sphere_mesh": "/Game/_GENERATED/Hyperlovimia/Sphere_732702C4.Sphere_732702C4",
+    "sun_illuminance_scale": 0.125
   },
   "objects": {
     "chaser": {
       "asset_type": "placeholder",
       "placeholder_shape": "cube",
-      "size_m": [2.0, 1.4, 1.0],
-      "color": [0.08, 0.32, 0.95, 1.0]
+      "size_m": [
+        2.0,
+        1.4,
+        1.0
+      ],
+      "color": [
+        0.08,
+        0.32,
+        0.95,
+        1.0
+      ]
     },
     "target": {
       "asset_type": "placeholder",
       "placeholder_shape": "sphere",
-      "size_m": [2.2, 1.6, 1.2],
-      "color": [0.95, 0.18, 0.05, 1.0]
+      "size_m": [
+        2.2,
+        1.6,
+        1.2
+      ],
+      "color": [
+        0.95,
+        0.18,
+        0.05,
+        1.0
+      ]
     }
   }
 }
