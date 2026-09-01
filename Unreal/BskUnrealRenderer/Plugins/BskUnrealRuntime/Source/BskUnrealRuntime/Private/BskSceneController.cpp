@@ -339,7 +339,7 @@ bool CompressPng(const TArray<FColor>& Pixels, int32 Width, int32 Height, TArray
     IImageWrapperModule& Module = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
     const TSharedPtr<IImageWrapper> Wrapper = Module.CreateImageWrapper(EImageFormat::PNG);
     if (!Wrapper.IsValid() || !Wrapper->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor), Width, Height, ERGBFormat::BGRA, 8)) return false;
-    const TArray64<uint8>& Compressed = Wrapper->GetCompressed(3);
+    const TArray64<uint8>& Compressed = Wrapper->GetCompressed(-3);
     if (Compressed.Num() > MAX_int32) return false;
     OutBytes.Append(Compressed.GetData(), static_cast<int32>(Compressed.Num()));
     return true;

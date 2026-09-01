@@ -12,6 +12,10 @@
   ],
   "Plugins": [
     {
+      "Name": "Fab",
+      "Enabled": false
+    },
+    {
       "Name": "BskUnrealRuntime",
       "Enabled": true
     },
