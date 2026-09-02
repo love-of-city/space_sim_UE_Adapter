@@ -645,6 +645,7 @@ void ABskSceneController::Tick(float DeltaSeconds)
             }
         }
     }
+    UpdateDecorativeSunPlacement();
     UpdatePictureInPictureCaptures();
     UpdatePixelStreamingCameraCaptures();
     if (GetWorld() && !PendingCommandIds.IsEmpty())
@@ -939,6 +940,9 @@ bool ABskSceneController::LoadConfiguration()
         if ((*Scene)->TryGetNumberField(TEXT("sun_illuminance_scale"), Number)) SunIlluminanceScale = FMath::Max(0.0, Number);
         if ((*Scene)->TryGetNumberField(TEXT("fill_light_intensity_lux"), Number)) FillLightIntensityLux = FMath::Max(0.0, Number);
         if ((*Scene)->TryGetNumberField(TEXT("material_exposure_bias"), Number)) MaterialExposureBias = FMath::Clamp(Number, -8.0, 8.0);
+        if ((*Scene)->TryGetNumberField(TEXT("sun_visual_distance_m"), Number)) SunVisualDistanceMeters = FMath::Max(1000.0, Number);
+        if ((*Scene)->TryGetNumberField(TEXT("sun_visual_angular_diameter_deg"), Number)) SunVisualAngularDiameterDegrees = FMath::Clamp(Number, 0.05, 10.0);
+        if ((*Scene)->TryGetNumberField(TEXT("sun_visual_emissive_strength"), Number)) SunVisualEmissiveStrength = FMath::Clamp(Number, 0.0, 1000.0);
         if ((*Scene)->TryGetNumberField(TEXT("decorative_earth_radius_m"), Number)) DecorativeEarthRadiusMeters = FMath::Max(1.0, Number);
         if ((*Scene)->TryGetNumberField(TEXT("earth_cloud_scale"), Number)) EarthCloudScale = FMath::Clamp(Number, 1.0, 1.2);
         if ((*Scene)->TryGetNumberField(TEXT("earth_atmosphere_scale"), Number)) EarthAtmosphereScale = FMath::Clamp(Number, EarthCloudScale, 1.5);
@@ -946,9 +950,12 @@ bool ABskSceneController::LoadConfiguration()
         (*Scene)->TryGetBoolField(TEXT("use_textured_star_sphere"), bUseTexturedStarSphere);
         (*Scene)->TryGetBoolField(TEXT("use_earth_sky_atmosphere"), bUseEarthSkyAtmosphere);
         (*Scene)->TryGetBoolField(TEXT("use_manual_exposure"), bUseManualExposure);
+        (*Scene)->TryGetBoolField(TEXT("sun_visual_enabled"), bEnableDecorativeSun);
         (*Scene)->TryGetBoolField(TEXT("decorative_earth_enabled"), bEnableDecorativeEarth);
         (*Scene)->TryGetStringField(TEXT("textured_star_mesh"), TexturedStarMeshPath);
         (*Scene)->TryGetStringField(TEXT("textured_star_material"), TexturedStarMaterialPath);
+        (*Scene)->TryGetStringField(TEXT("sun_visual_mesh"), SunVisualMeshPath);
+        (*Scene)->TryGetStringField(TEXT("sun_visual_material"), SunVisualMaterialPath);
         (*Scene)->TryGetStringField(TEXT("earth_sphere_mesh"), EarthSphereMeshPath);
         (*Scene)->TryGetStringField(TEXT("earth_surface_material"), EarthSurfaceMaterialPath);
         (*Scene)->TryGetStringField(TEXT("earth_cloud_material"), EarthCloudMaterialPath);
@@ -1114,42 +1121,59 @@ FString ABskSceneController::PixelStreamingIdForCamera(const FString& CameraId) 
     return FString::Printf(TEXT("%s__%s"), *PixelStreamingBaseId, *Safe);
 }
 
+void ABskSceneController::ConfigureFixedRgbExposure(USceneCaptureComponent2D* Capture) const
+{
+    if (!Capture) return;
+    Capture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+    Capture->ShowFlags.SetPostProcessing(true);
+    Capture->ShowFlags.SetEyeAdaptation(false);
+    Capture->ShowFlags.SetTonemapper(true);
+    Capture->PostProcessBlendWeight = 1.0f;
+    Capture->PostProcessSettings.bOverride_AutoExposureMethod = true;
+    Capture->PostProcessSettings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
+    Capture->PostProcessSettings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
+    Capture->PostProcessSettings.AutoExposureApplyPhysicalCameraExposure = false;
+    Capture->PostProcessSettings.bOverride_AutoExposureBias = true;
+    Capture->PostProcessSettings.AutoExposureBias = static_cast<float>(MaterialExposureBias);
+}
+
+void ABskSceneController::ConfigureRgbRenderTarget(UTextureRenderTarget2D* Target) const
+{
+    if (!Target) return;
+    Target->TargetGamma = 2.2f;
+    Target->ClearColor = FLinearColor::Black;
+}
+
 void ABskSceneController::ConfigurePixelStreamingCamera(AActor* Actor, const FBskCameraDefinition& Definition)
 {
     if (!Actor || !IsPixelStreamingCameraRequested(Definition.CameraId)) return;
 
-    USceneCaptureComponent2D* Capture = PixelStreamingCameraCaptures.FindRef(Definition.CameraId);
-    if (!Capture)
+    // The HUD picture-in-picture and the standalone Pixel Streaming camera must
+    // show the exact same rendered image. Reuse the camera's canonical capture
+    // and render target instead of maintaining a second view state/exposure path.
+    USceneCaptureComponent2D* Capture = CameraCaptureComponents.FindRef(Definition.CameraId);
+    UTextureRenderTarget2D* Target = CameraRenderTargets.FindRef(Definition.CameraId);
+    if (!Capture || !Target)
     {
-        Capture = NewObject<USceneCaptureComponent2D>(Actor,
-            MakeUniqueObjectName(Actor, USceneCaptureComponent2D::StaticClass(), TEXT("BskPixelStreamingCapture")));
-        if (!Capture) return;
-        Capture->SetupAttachment(Actor->GetRootComponent());
-        Capture->RegisterComponent();
-        Capture->SetRelativeTransform(FTransform::Identity);
-        Capture->bCaptureEveryFrame = false;
-        Capture->bCaptureOnMovement = false;
-        Capture->bAlwaysPersistRenderingState = true;
-        Capture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
-        Capture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
-        PixelStreamingCameraCaptures.Add(Definition.CameraId, Capture);
+        UE_LOG(LogBskUnreal, Error, TEXT("Shared camera capture is unavailable for Pixel Streaming camera %s"),
+            *Definition.CameraId);
+        return;
     }
-    Capture->FOVAngle = static_cast<float>(FMath::RadiansToDegrees(Definition.FieldOfViewRadians));
-    Capture->Activate();
-
-    UTextureRenderTarget2D* Target = PixelStreamingCameraTargets.FindRef(Definition.CameraId);
-    if (!Target || Target->SizeX != PixelStreamingCameraWidth || Target->SizeY != PixelStreamingCameraHeight)
-    {
-        Target = NewObject<UTextureRenderTarget2D>(this,
-            MakeUniqueObjectName(this, UTextureRenderTarget2D::StaticClass(), TEXT("BskPixelStreamingTarget")));
-        Target->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8;
-        Target->ClearColor = FLinearColor::Black;
-        Target->bAutoGenerateMips = false;
-        Target->InitAutoFormat(PixelStreamingCameraWidth, PixelStreamingCameraHeight);
-        Target->UpdateResourceImmediate(true);
-        PixelStreamingCameraTargets.Add(Definition.CameraId, Target);
-    }
+    ConfigureFixedRgbExposure(Capture);
+    ConfigureRgbRenderTarget(Target);
+    Capture->bAlwaysPersistRenderingState = true;
     Capture->TextureTarget = Target;
+    PixelStreamingCameraCaptures.Add(Definition.CameraId, Capture);
+    PixelStreamingCameraTargets.Add(Definition.CameraId, Target);
+    PixelStreamingCameraNextCaptureSeconds.Add(Definition.CameraId, 0.0);
+
+    if (Target->SizeX != PixelStreamingCameraWidth || Target->SizeY != PixelStreamingCameraHeight)
+    {
+        UE_LOG(LogBskUnreal, Warning,
+            TEXT("Camera %s shares its manifest resolution %dx%d with HUD and Pixel Streaming; requested streamer resolution was %dx%d"),
+            *Definition.CameraId, Target->SizeX, Target->SizeY,
+            PixelStreamingCameraWidth, PixelStreamingCameraHeight);
+    }
 
     if (!PixelStreamingCameraStreamers.Contains(Definition.CameraId))
     {
@@ -1173,8 +1197,7 @@ void ABskSceneController::ConfigurePixelStreamingCamera(AActor* Actor, const FBs
         Streamer->StartStreaming();
         PixelStreamingCameraStreamers.Add(Definition.CameraId, Streamer);
         PixelStreamingCameraProducers.Add(Definition.CameraId, Producer);
-        PixelStreamingCameraNextCaptureSeconds.Add(Definition.CameraId, 0.0);
-        UE_LOG(LogBskUnreal, Display, TEXT("Started camera streamer %s for manifest camera %s"),
+        UE_LOG(LogBskUnreal, Display, TEXT("Started shared-target camera streamer %s for manifest camera %s"),
             *StreamerId, *Definition.CameraId);
     }
 
@@ -1208,6 +1231,12 @@ void ABskSceneController::UpdatePixelStreamingCameraCaptures()
     for (const TPair<FString, TObjectPtr<USceneCaptureComponent2D>>& Pair : PixelStreamingCameraCaptures)
     {
         if (!Pair.Value || !Pair.Value->TextureTarget) continue;
+        const FBskCameraDefinition* Definition = ManifestCameras.Find(Pair.Key);
+        const bool bVisibleInHud = Definition && Definition->bPictureInPicture
+            && CameraPictureInPictureVisibility.FindRef(Pair.Key);
+        // A visible HUD PIP was already captured earlier in this game tick and
+        // feeds this same RenderTarget. Capture here only for hidden/non-PIP streams.
+        if (bVisibleInHud) continue;
         if (Now + UE_DOUBLE_SMALL_NUMBER < PixelStreamingCameraNextCaptureSeconds.FindRef(Pair.Key)) continue;
         Pair.Value->CaptureScene();
         PixelStreamingCameraNextCaptureSeconds.Add(Pair.Key, Now + Period);
@@ -1427,6 +1456,8 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
     ManifestCelestialBodies.Reset();
     PrimaryDirectionalLightBodyId.Reset();
     bEphemerisDirectionalLightActive = false;
+    CurrentSunAngularDiameterDegrees = SunVisualAngularDiameterDegrees;
+    UpdateDecorativeSunScale();
     ManifestVisuals.Reset();
     ManifestCameras.Reset();
     VisualBaseRotations.Reset();
@@ -1487,13 +1518,26 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
                     *Definition.BodyId, *PrimaryDirectionalLightBodyId);
             }
         }
-        if (!CelestialActors.Contains(Definition.BodyId))
+        const bool bUseDecorativeSunProxy = Definition.bDrivesDirectionalLight;
+        if (bUseDecorativeSunProxy)
+        {
+            if (AActor* ExistingActor = CelestialActors.FindRef(Definition.BodyId))
+            {
+                ExistingActor->SetActorHiddenInGame(true);
+            }
+            UE_LOG(LogBskUnreal, Display,
+                TEXT("Celestial body '%s' drives lighting and will not spawn at ephemeris distance; decorative proxy=%s"),
+                *Definition.BodyId, DecorativeSunActor ? TEXT("enabled") : TEXT("disabled"));
+        }
+        else if (!CelestialActors.Contains(Definition.BodyId))
         {
             if (AActor* Actor = SpawnCelestialBody(Definition)) CelestialActors.Add(Definition.BodyId, Actor);
         }
     }
     if (PrimaryDirectionalLightBodyId.IsEmpty())
     {
+        CurrentSunSourceDirection = -SunRotation.Vector().GetSafeNormal();
+        if (SunLight) SunLight->SetActorRotation(SunRotation);
         UE_LOG(LogBskUnreal, Warning,
             TEXT("Manifest has no ephemeris-driven directional light; using configured fallback rotation %s"),
             *SunRotation.ToCompactString());
@@ -2027,7 +2071,7 @@ void ABskSceneController::ConfigureManifestLighting(const FBskSceneManifest& Man
     Spot->SetCastShadows(false);
     if (ExposureVolume)
     {
-        ExposureVolume->Settings.AutoExposureBias = static_cast<float>(Manifest.bUseSceneLighting ? 0.25 : MaterialExposureBias);
+        ExposureVolume->Settings.AutoExposureBias = static_cast<float>(MaterialExposureBias);
     }
 }
 
@@ -2068,11 +2112,10 @@ void ABskSceneController::ConfigureCamera(AActor* Actor, const FBskCameraDefinit
         CameraActor->GetCameraComponent()->FieldOfView = FieldOfViewDegrees;
     }
 
-    ConfigurePixelStreamingCamera(Actor, Definition);
-
     USceneCaptureComponent2D* Capture = CameraCaptureComponents.FindRef(Definition.CameraId);
     const bool bHasDataProducts = !CaptureProductOverride.IsEmpty() || !Definition.CaptureProducts.IsEmpty();
-    if (!Definition.bPictureInPicture && !bHasDataProducts)
+    const bool bPixelStreamingRequested = IsPixelStreamingCameraRequested(Definition.CameraId);
+    if (!Definition.bPictureInPicture && !bHasDataProducts && !bPixelStreamingRequested)
     {
         if (Capture) Capture->Deactivate();
         CameraRenderTargets.Remove(Definition.CameraId);
@@ -2091,32 +2134,38 @@ void ABskSceneController::ConfigureCamera(AActor* Actor, const FBskCameraDefinit
         Capture->SetRelativeTransform(FTransform::Identity);
         Capture->bCaptureEveryFrame = false;
         Capture->bCaptureOnMovement = false;
-        Capture->bAlwaysPersistRenderingState = false;
+        Capture->bAlwaysPersistRenderingState = true;
         Capture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
         Capture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
         CameraCaptureComponents.Add(Definition.CameraId, Capture);
     }
+    ConfigureFixedRgbExposure(Capture);
+    Capture->bAlwaysPersistRenderingState = true;
     Capture->Activate();
     Capture->FOVAngle = FieldOfViewDegrees;
 
     UTextureRenderTarget2D* RenderTarget = CameraRenderTargets.FindRef(Definition.CameraId);
     if (!RenderTarget || RenderTarget->SizeX != Definition.Resolution.X || RenderTarget->SizeY != Definition.Resolution.Y)
     {
-        RenderTarget = NewObject<UTextureRenderTarget2D>(this, MakeUniqueObjectName(this, UTextureRenderTarget2D::StaticClass(), TEXT("BskPictureInPictureTarget")));
+        RenderTarget = NewObject<UTextureRenderTarget2D>(this, MakeUniqueObjectName(this, UTextureRenderTarget2D::StaticClass(), TEXT("BskSharedCameraTarget")));
         RenderTarget->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RGBA8;
-        RenderTarget->ClearColor = FLinearColor::Black;
         RenderTarget->bAutoGenerateMips = false;
         RenderTarget->InitAutoFormat(Definition.Resolution.X, Definition.Resolution.Y);
+        ConfigureRgbRenderTarget(RenderTarget);
         RenderTarget->UpdateResourceImmediate(true);
         CameraRenderTargets.Add(Definition.CameraId, RenderTarget);
     }
     Capture->TextureTarget = RenderTarget;
-    if (!CameraPictureInPictureVisibility.Contains(Definition.CameraId))
+    if (Definition.bPictureInPicture && !CameraPictureInPictureVisibility.Contains(Definition.CameraId))
     {
         CameraPictureInPictureVisibility.Add(Definition.CameraId, true);
     }
     CameraNextCaptureSeconds.Add(Definition.CameraId, 0.0);
     CameraNextDataCaptureSimulationNanoseconds.Add(Definition.CameraId, 0);
+
+    // Configure the standalone streamer only after the canonical capture and
+    // target exist, so the HUD inset and selected camera are pixel-identical.
+    ConfigurePixelStreamingCamera(Actor, Definition);
 }
 
 void ABskSceneController::UpdatePictureInPictureCaptures()
@@ -2132,7 +2181,8 @@ void ABskSceneController::UpdatePictureInPictureCaptures()
         const double NextCaptureSeconds = CameraNextCaptureSeconds.FindRef(Pair.Key);
         if (NowSeconds + UE_DOUBLE_SMALL_NUMBER < NextCaptureSeconds) continue;
         Capture->CaptureScene();
-        const double PreviewRate = PreviewRateOverrideHertz > 0.0 ? PreviewRateOverrideHertz : Definition.CaptureRateHertz;
+        double PreviewRate = PreviewRateOverrideHertz > 0.0 ? PreviewRateOverrideHertz : Definition.CaptureRateHertz;
+        if (IsPixelStreamingCameraRequested(Pair.Key)) PreviewRate = FMath::Max(PreviewRate, PixelStreamingCameraRateHertz);
         CameraNextCaptureSeconds.Add(Pair.Key, NowSeconds + 1.0 / FMath::Max(1.0, PreviewRate));
         if (PreviewRateOverrideHertz > 0.0 && CaptureNetworkSender && bHasPresentationFrame)
         {
@@ -2263,6 +2313,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
             Components.Add(Request.CameraId, Capture);
         }
         Capture->CaptureSource = Source;
+        if (Source == ESceneCaptureSource::SCS_FinalColorLDR) ConfigureFixedRgbExposure(Capture);
         Capture->FOVAngle = FieldOfViewDegrees;
         Capture->Activate();
         UTextureRenderTarget2D* Target = Targets.FindRef(Request.CameraId);
@@ -2274,6 +2325,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
             Target->ClearColor = FLinearColor::Black;
             Target->bAutoGenerateMips = false;
             Target->InitAutoFormat(Resolution.X, Resolution.Y);
+            if (Format == ETextureRenderTargetFormat::RTF_RGBA8) ConfigureRgbRenderTarget(Target);
             Target->UpdateResourceImmediate(true);
             Targets.Add(Request.CameraId, Target);
         }
@@ -2811,26 +2863,58 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
             EarthAtmosphere->SetActorLocation(Location, false, nullptr, ETeleportType::TeleportPhysics);
             EarthAtmosphere->SetActorHiddenInGame(false);
         }
-        if (State.BodyId == PrimaryDirectionalLightBodyId && SunLight && !bUseManifestSceneLighting)
+        if (State.BodyId == PrimaryDirectionalLightBodyId)
         {
             const FBskCelestialBodyDefinition* Definition = ManifestCelestialBodies.Find(State.BodyId);
-            const FVector LightRayDirection = BskCelestialLighting::DirectionFromSourceToTarget(Location);
-            if (!LightRayDirection.IsNearlyZero() && Definition)
+            const double SourceDistanceMeters = State.PositionMeters.Length();
+            const FVector DirectionTowardSource = Location.GetSafeNormal();
+            if (Definition && !DirectionTowardSource.IsNearlyZero())
             {
-                SunLight->SetActorRotation(LightRayDirection.Rotation());
-                SunLight->GetLightComponent()->SetLightColor(FLinearColor(
-                    static_cast<float>(Definition->LightColorRgb.X),
-                    static_cast<float>(Definition->LightColorRgb.Y),
-                    static_cast<float>(Definition->LightColorRgb.Z)));
-                const double BaseIlluminance = Definition->LightIlluminanceLuxAtReferenceDistance > 0.0
-                    ? Definition->LightIlluminanceLuxAtReferenceDistance
-                    : SunIntensityLux;
-                const double Illuminance = BskCelestialLighting::IlluminanceLux(
-                    BaseIlluminance,
-                    Definition->LightReferenceDistanceMeters,
-                    State.PositionMeters.Length());
-                SunLight->GetLightComponent()->SetIntensity(static_cast<float>(Illuminance * SunIlluminanceScale));
-                bEphemerisDirectionalLightActive = true;
+                CurrentSunSourceDirection = DirectionTowardSource;
+                if (Definition->EquatorialRadiusMeters > 0.0 &&
+                    SourceDistanceMeters > Definition->EquatorialRadiusMeters)
+                {
+                    const double AngularRadiusRadians = FMath::Asin(FMath::Clamp(
+                        Definition->EquatorialRadiusMeters / SourceDistanceMeters, 0.0, 1.0));
+                    const double AngularDiameterDegrees = FMath::RadiansToDegrees(2.0 * AngularRadiusRadians);
+                    if (FMath::IsFinite(AngularDiameterDegrees) && AngularDiameterDegrees > 0.0)
+                    {
+                        CurrentSunAngularDiameterDegrees = FMath::Clamp(AngularDiameterDegrees, 0.001, 10.0);
+                        UpdateDecorativeSunScale();
+                    }
+                }
+
+                if (SunLight && !bUseManifestSceneLighting)
+                {
+                    const FVector LightRayDirection = BskCelestialLighting::DirectionFromSourceToTarget(Location);
+                    if (!LightRayDirection.IsNearlyZero())
+                    {
+                        const bool bWasEphemerisActive = bEphemerisDirectionalLightActive;
+                        SunLight->SetActorRotation(LightRayDirection.Rotation());
+                        SunLight->GetLightComponent()->SetLightColor(FLinearColor(
+                            static_cast<float>(Definition->LightColorRgb.X),
+                            static_cast<float>(Definition->LightColorRgb.Y),
+                            static_cast<float>(Definition->LightColorRgb.Z)));
+                        const double BaseIlluminance = Definition->LightIlluminanceLuxAtReferenceDistance > 0.0
+                            ? Definition->LightIlluminanceLuxAtReferenceDistance
+                            : SunIntensityLux;
+                        const double Illuminance = BskCelestialLighting::IlluminanceLux(
+                            BaseIlluminance,
+                            Definition->LightReferenceDistanceMeters,
+                            SourceDistanceMeters);
+                        SunLight->GetLightComponent()->SetIntensity(static_cast<float>(Illuminance * SunIlluminanceScale));
+                        bEphemerisDirectionalLightActive = true;
+                        if (!bWasEphemerisActive)
+                        {
+                            UE_LOG(LogBskUnreal, Display,
+                                TEXT("Ephemeris Sun active distance=%.6f AU angular_diameter=%.4f deg direction=%s illuminance=%.4f lux"),
+                                SourceDistanceMeters / 149597870700.0,
+                                CurrentSunAngularDiameterDegrees,
+                                *CurrentSunSourceDirection.ToCompactString(),
+                                Illuminance * SunIlluminanceScale);
+                        }
+                    }
+                }
             }
         }
     }
@@ -3022,6 +3106,103 @@ bool ABskSceneController::CreateTexturedStarSphere()
     return true;
 }
 
+void ABskSceneController::CreateDecorativeSun()
+{
+    if (!bEnableDecorativeSun) return;
+    UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, *SunVisualMeshPath);
+    UMaterialInterface* SunMaterial = LoadObject<UMaterialInterface>(nullptr, *SunVisualMaterialPath);
+    if (!SphereMesh || !SunMaterial)
+    {
+        UE_LOG(LogBskUnreal, Warning,
+            TEXT("Solar System Scope Sun assets unavailable mesh=%s material=%s"),
+            SphereMesh ? TEXT("ok") : TEXT("missing"), SunMaterial ? TEXT("ok") : TEXT("missing"));
+        return;
+    }
+
+    const double MaximumDistanceMeters = FMath::Max(1000.0, CelestialVaultRadiusKilometers * 1000.0 * 0.92);
+    const double EffectiveDistanceMeters = FMath::Min(SunVisualDistanceMeters, MaximumDistanceMeters);
+    const FBoxSphereBounds MeshBounds = SphereMesh->GetBounds();
+    DecorativeSunSourceRadiusCentimeters = FMath::Max(
+        static_cast<double>(MeshBounds.BoxExtent.GetMax()), UE_DOUBLE_SMALL_NUMBER);
+    DecorativeSunSourceCenterCentimeters = FVector(MeshBounds.Origin);
+    CurrentSunAngularDiameterDegrees = SunVisualAngularDiameterDegrees;
+
+    FActorSpawnParameters Params;
+    Params.Name = MakeUniqueObjectName(GetWorld(), AActor::StaticClass(), TEXT("BSK_VisibleSun"));
+    Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    DecorativeSunActor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, Params);
+    if (!DecorativeSunActor) return;
+
+    USceneComponent* Root = NewObject<USceneComponent>(DecorativeSunActor, TEXT("SunVisualRoot"));
+    Root->SetMobility(EComponentMobility::Movable);
+    Root->RegisterComponent();
+    DecorativeSunActor->SetRootComponent(Root);
+
+    UStaticMeshComponent* Component = NewObject<UStaticMeshComponent>(DecorativeSunActor, TEXT("SunSurface"));
+    Component->SetMobility(EComponentMobility::Movable);
+    Component->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Component->SetCastShadow(false);
+    Component->SetAffectDistanceFieldLighting(false);
+    Component->SetAffectDynamicIndirectLighting(false);
+    Component->SetReceivesDecals(false);
+    Component->SetRenderInMainPass(true);
+    Component->SetRenderInDepthPass(true);
+    Component->SetCanEverAffectNavigation(false);
+    Component->SetStaticMesh(SphereMesh);
+    UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(SunMaterial, DecorativeSunActor);
+    Material->SetScalarParameterValue(TEXT("EmissiveStrength"), static_cast<float>(SunVisualEmissiveStrength));
+    Component->SetMaterial(0, Material);
+    Component->SetupAttachment(Root);
+    Component->RegisterComponent();
+    DecorativeSunComponent = Component;
+    UpdateDecorativeSunScale();
+
+    DecorativeSunActor->Tags.AddUnique(FName(TEXT("BSK.Environment.SunVisual")));
+    DecorativeSunActor->Tags.AddUnique(FName(TEXT("BSK.Semantic.sun")));
+    UpdateDecorativeSunPlacement();
+    UE_LOG(LogBskUnreal, Display,
+        TEXT("Created Solar System Scope Sun visual distance=%.0f km angular_diameter=%.3f deg emissive=%.2f material=%s"),
+        EffectiveDistanceMeters / 1000.0,
+        CurrentSunAngularDiameterDegrees,
+        SunVisualEmissiveStrength,
+        *SunVisualMaterialPath);
+}
+
+void ABskSceneController::UpdateDecorativeSunScale()
+{
+    if (!DecorativeSunComponent || DecorativeSunSourceRadiusCentimeters <= UE_DOUBLE_SMALL_NUMBER) return;
+    const double MaximumDistanceMeters = FMath::Max(1000.0, CelestialVaultRadiusKilometers * 1000.0 * 0.92);
+    const double EffectiveDistanceMeters = FMath::Min(SunVisualDistanceMeters, MaximumDistanceMeters);
+    const double AngularRadiusRadians = FMath::DegreesToRadians(CurrentSunAngularDiameterDegrees * 0.5);
+    const double TargetRadiusMeters = EffectiveDistanceMeters * FMath::Tan(AngularRadiusRadians);
+    const double MeshScale = TargetRadiusMeters * Converter.GetCentimetersPerMeter() /
+        DecorativeSunSourceRadiusCentimeters;
+    DecorativeSunComponent->SetRelativeScale3D(FVector(MeshScale));
+    DecorativeSunComponent->SetRelativeLocation(-DecorativeSunSourceCenterCentimeters * MeshScale);
+}
+
+void ABskSceneController::UpdateDecorativeSunPlacement()
+{
+    if (!DecorativeSunActor || !SunLight) return;
+    FVector ViewLocation = FVector::ZeroVector;
+    FRotator ViewRotation = FRotator::ZeroRotator;
+    if (APlayerController* Player = GetWorld()->GetFirstPlayerController())
+    {
+        Player->GetPlayerViewPoint(ViewLocation, ViewRotation);
+    }
+    const FVector DirectionTowardSun = CurrentSunSourceDirection.GetSafeNormal();
+    if (DirectionTowardSun.IsNearlyZero()) return;
+    const double MaximumDistanceMeters = FMath::Max(1000.0, CelestialVaultRadiusKilometers * 1000.0 * 0.92);
+    const double EffectiveDistanceMeters = FMath::Min(SunVisualDistanceMeters, MaximumDistanceMeters);
+    const double DistanceCentimeters = EffectiveDistanceMeters * Converter.GetCentimetersPerMeter();
+    const FVector SunLocation = ViewLocation + DirectionTowardSun * DistanceCentimeters;
+    DecorativeSunActor->SetActorLocation(
+        SunLocation,
+        false,
+        nullptr,
+        ETeleportType::TeleportPhysics);
+}
+
 void ABskSceneController::CreateDecorativeEarth()
 {
     if (!bEnableDecorativeEarth) return;
@@ -3043,6 +3224,7 @@ void ABskSceneController::CreateDecorativeEarth()
 
 void ABskSceneController::CreateEnvironment()
 {
+    CurrentSunSourceDirection = -SunRotation.Vector().GetSafeNormal();
     FActorSpawnParameters Params;
     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
     if (ADirectionalLight* Sun = GetWorld()->SpawnActor<ADirectionalLight>(ADirectionalLight::StaticClass(), FVector::ZeroVector, SunRotation, Params))
@@ -3145,6 +3327,7 @@ void ABskSceneController::CreateEnvironment()
         }
     }
 
+    CreateDecorativeSun();
     CreateDecorativeEarth();
 
     // MyProject2 uses only its textured star sphere and no additional star
