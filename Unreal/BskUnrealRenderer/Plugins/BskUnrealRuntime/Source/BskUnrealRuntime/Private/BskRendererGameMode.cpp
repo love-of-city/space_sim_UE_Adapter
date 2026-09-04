@@ -25,6 +25,10 @@ void ABskRendererGameMode::StartPlay()
         const FVector Target = Scene->GetConfiguredCameraLookAtCentimeters();
         Pawn->SetActorLocation(Eye);
         Player->SetControlRotation((Target - Eye).Rotation());
+        if (ABskCameraPawn* BskPawn = Cast<ABskCameraPawn>(Pawn))
+        {
+            BskPawn->SetMainViewTransform(Eye, (Target - Eye).Rotation());
+        }
         Player->SetViewTarget(Pawn);
         Player->bShowMouseCursor = false;
         UE_LOG(LogBskUnreal, Display, TEXT("BSK camera ready: pawn=%s eye_cm=%s target_cm=%s"),

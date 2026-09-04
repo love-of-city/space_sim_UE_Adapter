@@ -18,6 +18,8 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Particles/ParticleSystem.h"
+#include "Particles/ParticleSystemComponent.h"
 #include "Dom/JsonObject.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/DirectionalLight.h"
@@ -943,6 +945,7 @@ bool ABskSceneController::LoadConfiguration()
         if ((*Scene)->TryGetNumberField(TEXT("sun_visual_distance_m"), Number)) SunVisualDistanceMeters = FMath::Max(1000.0, Number);
         if ((*Scene)->TryGetNumberField(TEXT("sun_visual_angular_diameter_deg"), Number)) SunVisualAngularDiameterDegrees = FMath::Clamp(Number, 0.05, 10.0);
         if ((*Scene)->TryGetNumberField(TEXT("sun_visual_emissive_strength"), Number)) SunVisualEmissiveStrength = FMath::Clamp(Number, 0.0, 1000.0);
+        if ((*Scene)->TryGetNumberField(TEXT("sun_visual_effect_scale"), Number)) SunVisualEffectScale = FMath::Clamp(Number, 0.01, 100.0);
         if ((*Scene)->TryGetNumberField(TEXT("decorative_earth_radius_m"), Number)) DecorativeEarthRadiusMeters = FMath::Max(1.0, Number);
         if ((*Scene)->TryGetNumberField(TEXT("earth_cloud_scale"), Number)) EarthCloudScale = FMath::Clamp(Number, 1.0, 1.2);
         if ((*Scene)->TryGetNumberField(TEXT("earth_atmosphere_scale"), Number)) EarthAtmosphereScale = FMath::Clamp(Number, EarthCloudScale, 1.5);
@@ -951,11 +954,15 @@ bool ABskSceneController::LoadConfiguration()
         (*Scene)->TryGetBoolField(TEXT("use_earth_sky_atmosphere"), bUseEarthSkyAtmosphere);
         (*Scene)->TryGetBoolField(TEXT("use_manual_exposure"), bUseManualExposure);
         (*Scene)->TryGetBoolField(TEXT("sun_visual_enabled"), bEnableDecorativeSun);
+        (*Scene)->TryGetBoolField(TEXT("sun_visual_effects_enabled"), bEnableDecorativeSunEffects);
         (*Scene)->TryGetBoolField(TEXT("decorative_earth_enabled"), bEnableDecorativeEarth);
         (*Scene)->TryGetStringField(TEXT("textured_star_mesh"), TexturedStarMeshPath);
         (*Scene)->TryGetStringField(TEXT("textured_star_material"), TexturedStarMaterialPath);
         (*Scene)->TryGetStringField(TEXT("sun_visual_mesh"), SunVisualMeshPath);
         (*Scene)->TryGetStringField(TEXT("sun_visual_material"), SunVisualMaterialPath);
+        (*Scene)->TryGetStringField(TEXT("sun_burst_particle"), SunBurstParticlePath);
+        (*Scene)->TryGetStringField(TEXT("sun_halo_particle"), SunHaloParticlePath);
+        (*Scene)->TryGetStringField(TEXT("sun_lines_particle"), SunLinesParticlePath);
         (*Scene)->TryGetStringField(TEXT("earth_sphere_mesh"), EarthSphereMeshPath);
         (*Scene)->TryGetStringField(TEXT("earth_surface_material"), EarthSurfaceMaterialPath);
         (*Scene)->TryGetStringField(TEXT("earth_cloud_material"), EarthCloudMaterialPath);
@@ -3155,6 +3162,7 @@ void ABskSceneController::CreateDecorativeSun()
     Component->SetupAttachment(Root);
     Component->RegisterComponent();
     DecorativeSunComponent = Component;
+    CreateDecorativeSunEffects(Root);
     UpdateDecorativeSunScale();
 
     DecorativeSunActor->Tags.AddUnique(FName(TEXT("BSK.Environment.SunVisual")));
@@ -3168,6 +3176,49 @@ void ABskSceneController::CreateDecorativeSun()
         *SunVisualMaterialPath);
 }
 
+void ABskSceneController::CreateDecorativeSunEffects(USceneComponent* Root)
+{
+    if (!bEnableDecorativeSunEffects || !DecorativeSunActor || !Root) return;
+
+    const TArray<TPair<FString, FString>> Effects = {
+        {TEXT("SunBursts"), SunBurstParticlePath},
+        {TEXT("SunHalo"), SunHaloParticlePath},
+        {TEXT("SunLines"), SunLinesParticlePath},
+    };
+    for (const TPair<FString, FString>& Effect : Effects)
+    {
+        if (Effect.Value.IsEmpty()) continue;
+        UParticleSystem* Template = LoadObject<UParticleSystem>(nullptr, *Effect.Value);
+        if (!Template)
+        {
+            UE_LOG(LogBskUnreal, Warning,
+                TEXT("SP_space Sun particle asset unavailable name=%s path=%s"),
+                *Effect.Key, *Effect.Value);
+            continue;
+        }
+
+        const FName ComponentName = MakeUniqueObjectName(
+            DecorativeSunActor, UParticleSystemComponent::StaticClass(), *FString::Printf(TEXT("%sParticle"), *Effect.Key));
+        UParticleSystemComponent* Component = NewObject<UParticleSystemComponent>(DecorativeSunActor, ComponentName);
+        if (!Component) continue;
+        Component->SetMobility(EComponentMobility::Movable);
+        Component->SetTemplate(Template);
+        Component->bAutoActivate = true;
+        Component->bAutoDestroy = false;
+        Component->SetCastShadow(false);
+        Component->SetReceivesDecals(false);
+        Component->SetCanEverAffectNavigation(false);
+        Component->SetupAttachment(Root);
+        Component->RegisterComponent();
+        Component->ActivateSystem(true);
+        DecorativeSunParticleComponents.Add(Component);
+
+        UE_LOG(LogBskUnreal, Display,
+            TEXT("Added SP_space Sun particle effect name=%s asset=%s"),
+            *Effect.Key, *Effect.Value);
+    }
+}
+
 void ABskSceneController::UpdateDecorativeSunScale()
 {
     if (!DecorativeSunComponent || DecorativeSunSourceRadiusCentimeters <= UE_DOUBLE_SMALL_NUMBER) return;
@@ -3179,6 +3230,11 @@ void ABskSceneController::UpdateDecorativeSunScale()
         DecorativeSunSourceRadiusCentimeters;
     DecorativeSunComponent->SetRelativeScale3D(FVector(MeshScale));
     DecorativeSunComponent->SetRelativeLocation(-DecorativeSunSourceCenterCentimeters * MeshScale);
+    for (UParticleSystemComponent* Particle : DecorativeSunParticleComponents)
+    {
+        if (!Particle) continue;
+        Particle->SetRelativeScale3D(FVector(MeshScale * SunVisualEffectScale));
+    }
 }
 
 void ABskSceneController::UpdateDecorativeSunPlacement()
