@@ -131,7 +131,7 @@ Demo 8 也可以在线实时流式运行。此时 UE 先监听，Basilisk/MJScen
 .\scripts\start_renderer.ps1 -ReplayPath .\Saved\Recordings\demo8.bskrec -ReplayRate 120
 ```
 
-相机：`W/S` 前后、`A/D` 左右、`Q/E` 上下、鼠标观察。辅助视锥默认隐藏；按 `1` 切换 CSS、`2` 切换通用传感器（Demo 8 中为星敏）、`3` 切换通信机视场。C++/Blueprint 可通过 `SetVisualKindVisible`、`ToggleVisualKindVisible` 和 `IsVisualKindVisible` 控制任意 visual kind，也支持按对象 ID 进入环绕或跟随模式。
+相机：默认保持主视角；按 `C` 进入/退出自由视角，`W/S` 前后、`A/D` 左右、`Q/E` 上下、鼠标观察，按 `Home` 返回主视角。机械臂夹爪的 `F/R` 键仍由前端操作台保留。辅助视锥默认隐藏；按 `1` 切换 CSS、`2` 切换通用传感器（Demo 8 中为星敏）、`3` 切换通信机视场。C++/Blueprint 可通过 `SetVisualKindVisible`、`ToggleVisualKindVisible` 和 `IsVisualKindVisible` 控制任意 visual kind，也支持按对象 ID 进入环绕或跟随模式。
 
 默认显示策略可在 `Config/bsk_unreal_scene.json` 中覆盖：
 

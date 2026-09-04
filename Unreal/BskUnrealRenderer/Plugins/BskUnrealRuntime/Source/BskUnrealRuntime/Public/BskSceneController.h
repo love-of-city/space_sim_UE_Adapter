@@ -11,6 +11,8 @@ class ADirectionalLight;
 class APostProcessVolume;
 class ASpotLight;
 class ASkyAtmosphere;
+class UParticleSystemComponent;
+class USceneComponent;
 class USceneCaptureComponent2D;
 class UStaticMeshComponent;
 class UTextureRenderTarget2D;
@@ -139,6 +141,7 @@ private:
     AActor* SpawnTexturedEarth(const FString& ActorName, double RadiusMeters);
     bool CreateTexturedStarSphere();
     void CreateDecorativeSun();
+    void CreateDecorativeSunEffects(USceneComponent* Root);
     void UpdateDecorativeSunScale();
     void UpdateDecorativeSunPlacement();
     void CreateDecorativeEarth();
@@ -210,6 +213,8 @@ private:
     TObjectPtr<UStaticMeshComponent> DeepSkyComponent;
     TObjectPtr<AActor> DecorativeSunActor;
     TObjectPtr<UStaticMeshComponent> DecorativeSunComponent;
+    UPROPERTY(Transient)
+    TArray<TObjectPtr<UParticleSystemComponent>> DecorativeSunParticleComponents;
     TObjectPtr<AActor> DecorativeEarthActor;
     TSet<FString> CelestialBillboardIds;
     TMap<FString, FObjectSpec> ObjectSpecs;
@@ -240,6 +245,8 @@ private:
     double SunVisualAngularDiameterDegrees = 2.0;
     double CurrentSunAngularDiameterDegrees = 2.0;
     double SunVisualEmissiveStrength = 1.5;
+    bool bEnableDecorativeSunEffects = false;
+    double SunVisualEffectScale = 1.0;
     double DecorativeSunSourceRadiusCentimeters = 0.0;
     FVector DecorativeSunSourceCenterCentimeters = FVector::ZeroVector;
     double DecorativeEarthRadiusMeters = 6371000.0;
@@ -251,6 +258,9 @@ private:
     FString TexturedStarMaterialPath = TEXT("/Game/Planets/Stars/M_Stars.M_Stars");
     FString SunVisualMeshPath = TEXT("/Engine/BasicShapes/Sphere.Sphere");
     FString SunVisualMaterialPath = TEXT("/Game/Planets/Sun/M_Sun.M_Sun");
+    FString SunBurstParticlePath = TEXT("/Game/SpaceFX/Particles/P_Sun_Bursts.P_Sun_Bursts");
+    FString SunHaloParticlePath = TEXT("/Game/SpaceFX/Particles/P_Sun_Halo.P_Sun_Halo");
+    FString SunLinesParticlePath = TEXT("/Game/SpaceFX/Particles/P_Sun_Lines.P_Sun_Lines");
     FString EarthSphereMeshPath = TEXT("/Game/_GENERATED/Hyperlovimia/Sphere_732702C4.Sphere_732702C4");
     FString EarthSurfaceMaterialPath = TEXT("/Game/Planets/Earth/M_Earth.M_Earth");
     FString EarthCloudMaterialPath = TEXT("/Game/Planets/Earth/M_Clouds.M_Clouds");
