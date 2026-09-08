@@ -47,6 +47,18 @@ inline double VisibleSourceFraction(
     return FMath::Clamp(1.0 - Overlap / (UE_DOUBLE_PI * A * A), 0.0, 1.0);
 }
 
+/** A scene multiplier is dimensionless, bounded, and may explicitly be zero. */
+inline bool IsValidSunlightIntensityScale(const double Scale)
+{
+    return FMath::IsFinite(Scale) && Scale >= 0.0 && Scale <= 20000.0;
+}
+
+/** Scale illumination without modifying light direction, distance, or occultation. */
+inline double ScaleIlluminanceLux(const double Illuminance, const double Scale)
+{
+    return Illuminance * (IsValidSunlightIntensityScale(Scale) ? Scale : 1.0);
+}
+
 /** Inverse-square illuminance with a bounded denominator for malformed frames. */
 inline double IlluminanceLux(
     const double IlluminanceAtReference,

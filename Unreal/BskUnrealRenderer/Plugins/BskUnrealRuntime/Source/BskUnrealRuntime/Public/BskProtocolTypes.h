@@ -133,6 +133,7 @@ struct BSKUNREALRUNTIME_API FBskSceneManifest
     FVector3d HeadlightAmbientRgb = FVector3d(0.1, 0.1, 0.1);
     FVector3d HeadlightSpecularRgb = FVector3d::ZeroVector;
     double FillLightIntensityLux = -1.0;
+    double SunlightIntensityScale = 1.0; // [-], scene-local multiplier; zero disables direct sunlight
     double InterpolationDelayMilliseconds = 100.0;
     double MaxExtrapolationMilliseconds = 100.0;
     double DefaultCameraDistanceMeters = 25.0;

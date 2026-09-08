@@ -7,6 +7,7 @@ parent-from-child rotations in ``(w, x, y, z)`` order.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Any, Callable, Mapping, Sequence
 
 
@@ -179,9 +180,15 @@ class SceneSettings:
     # Negative keeps the renderer configuration value; zero disables the
     # non-physical readability fill for ephemeris-lit scenes.
     fill_light_intensity_lux: float = -1.0
+    sunlight_intensity_scale: float = 1.0  # [-], independent of renderer calibration
 
     def to_payload(self) -> dict[str, Any]:
+        scale = self.sunlight_intensity_scale
+        if (isinstance(scale, bool) or not isinstance(scale, (int, float))
+                or not math.isfinite(scale) or not 0.0 <= scale <= 20_000.0):
+            raise ValueError("sunlight_intensity_scale must be a finite number in [0, 20000]")
         payload = asdict(self)
+        payload["sunlight_intensity_scale"] = float(scale)
         for key in ("headlight_diffuse_rgb", "headlight_ambient_rgb", "headlight_specular_rgb"):
             payload[key] = _list(payload[key])
         return payload

@@ -7,6 +7,8 @@
 #include "BskRenderWorldSubsystem.h"
 #include "BskSceneController.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/DirectionalLight.h"
+#include "Components/LightComponent.h"
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/AutomationTest.h"
@@ -96,6 +98,57 @@ bool FBskCelestialLightManifestTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("reference illuminance"), Star.LightIlluminanceLuxAtReferenceDistance, 8.0);
     }
     TestEqual(TEXT("manifest disables readability fill"), Message.Manifest.FillLightIntensityLux, 0.0);
+    return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskSceneSunlightIntensityTest,
+    "BskUnreal.Celestial.SceneSunlightIntensity",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskSceneSunlightIntensityTest::RunTest(const FString& Parameters)
+{
+    ABskSceneController* Controller = NewObject<ABskSceneController>();
+    Controller->SunLight = NewObject<ADirectionalLight>();
+    Controller->CelestialSunLight = NewObject<ADirectionalLight>();
+    Controller->FillLight = NewObject<ADirectionalLight>();
+    Controller->SunIntensityLux = 8.0;
+    Controller->SunIlluminanceScale = 1.5; // Keep the renderer's calibration independent.
+    Controller->FillLightIntensityLux = 1.25;
+    FBskRenderMessage Message;
+    FString Error;
+    const FString Prefix = TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"revision\":\"1\",\"objects\":[],\"settings\":{");
+    for (const double Scale : {0.0, 0.5, 1.0, 2.0, 12500.0, 20000.0})
+    {
+        Error.Reset();
+        const FString Json = Prefix + FString::Printf(TEXT("\"sunlight_intensity_scale\":%.4f}}"), Scale);
+        TestTrue(*Error, FBskFrameParser::ParseMessageJson(Json, Message, Error));
+        TestEqual(TEXT("scale retained by parser"), Message.Manifest.SunlightIntensityScale, Scale);
+        Controller->ConfigureManifestLighting(Message.Manifest);
+        TestEqual(TEXT("local sunlight is scaled, including zero"),
+            Controller->SunLight->GetLightComponent()->Intensity, static_cast<float>(8.0 * Scale));
+        TestEqual(TEXT("planetary sunlight uses same scene multiplier"),
+            Controller->CelestialSunLight->GetLightComponent()->Intensity, static_cast<float>(8.0 * Scale));
+        TestEqual(TEXT("fill light is not scaled"), Controller->FillLight->GetLightComponent()->Intensity, 1.25f);
+        TestEqual(TEXT("renderer calibration is preserved"), Controller->SunIlluminanceScale, 1.5);
+        const double AtTwiceDistance = BskCelestialLighting::IlluminanceLux(8.0, 100.0, 200.0);
+        const double Scaled = BskCelestialLighting::ScaleIlluminanceLux(AtTwiceDistance * 1.5, Scale);
+        TestEqual(TEXT("inverse-square distance and calibration still apply"), Scaled, 3.0 * Scale);
+        TestEqual(TEXT("eclipse still extinguishes local sunlight"), Scaled * 0.0, 0.0);
+    }
+    Error.Reset();
+    TestTrue(TEXT("old manifest without multiplier is accepted"),
+        FBskFrameParser::ParseMessageJson(Prefix + TEXT("}}"), Message, Error));
+    Controller->ConfigureManifestLighting(Message.Manifest);
+    TestEqual(TEXT("old manifest resets previous scene multiplier"), Controller->SceneSunlightIntensityScale, 1.0);
+    TestEqual(TEXT("default lighting restored"), Controller->SunLight->GetLightComponent()->Intensity, 8.0f);
+    for (const FString Invalid : {TEXT("-1"), TEXT("20000.1"), TEXT("\"2\""), TEXT("null"), TEXT("true")})
+    {
+        Error.Reset();
+        TestFalse(*FString::Printf(TEXT("invalid multiplier %s rejected"), *Invalid), FBskFrameParser::ParseMessageJson(
+            Prefix + TEXT("\"sunlight_intensity_scale\":") + Invalid + TEXT("}}"), Message, Error));
+    }
     return true;
 }
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 新增场景级 `sunlight_intensity_scale`（0～10，默认 1）：保留原星历/距离衰减/地影，仅调节太阳照明；支持明确关闭直射光及旧 manifest 重置，并增加 Python/UE 光照组件测试。
+
 - 支持 MJCF 引用的 ASCII/Binary STL：确定性缓存转换、完整 LOD0、源指纹重导入、角度感知法线和基础 UV。
 - MJCF 元数据遍历支持 `<frame>` 安装层级，可发现 MjSpec 组合模型中的嵌套 mesh。
 - 增加自由漂浮 CubeSat + SO-101 一键实时示例，并支持在高频动力学任务中约 30 Hz 限频采样。

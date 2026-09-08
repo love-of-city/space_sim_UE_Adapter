@@ -1,4 +1,5 @@
 #include "BskFrameParser.h"
+#include "BskCelestialLighting.h"
 
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
@@ -155,6 +156,8 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
         Error = TEXT("scene_manifest requires an integer revision");
         return false;
     }
+    // Reset this optional field even when a caller reuses an output message.
+    Out.SunlightIntensityScale = 1.0;
     const TSharedPtr<FJsonObject>* Settings = nullptr;
     if (Root->TryGetObjectField(TEXT("settings"), Settings) && Settings != nullptr)
     {
@@ -169,6 +172,14 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
         ReadVector3(*Settings, TEXT("headlight_specular_rgb"), Out.HeadlightSpecularRgb, false, Error);
         if (!Error.IsEmpty()) return false;
         (*Settings)->TryGetNumberField(TEXT("fill_light_intensity_lux"), Out.FillLightIntensityLux);
+        if ((*Settings)->HasField(TEXT("sunlight_intensity_scale")) &&
+            (!(*Settings)->HasTypedField<EJson::Number>(TEXT("sunlight_intensity_scale")) ||
+             !(*Settings)->TryGetNumberField(TEXT("sunlight_intensity_scale"), Out.SunlightIntensityScale) ||
+             !BskCelestialLighting::IsValidSunlightIntensityScale(Out.SunlightIntensityScale)))
+        {
+            Error = TEXT("settings.sunlight_intensity_scale must be a finite number in [0, 20000]");
+            return false;
+        }
         (*Settings)->TryGetNumberField(TEXT("interpolation_delay_ms"), Out.InterpolationDelayMilliseconds);
         (*Settings)->TryGetNumberField(TEXT("max_extrapolation_ms"), Out.MaxExtrapolationMilliseconds);
         (*Settings)->TryGetNumberField(TEXT("default_camera_distance_m"), Out.DefaultCameraDistanceMeters);

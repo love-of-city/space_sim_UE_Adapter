@@ -116,6 +116,7 @@ protected:
 private:
     friend class FBskBuiltinCaptureProvider;
     friend class FBskLocalFrameExtrapolationTest;
+    friend class FBskSceneSunlightIntensityTest;
     struct FObjectSpec
     {
         FString AssetType = TEXT("placeholder");
@@ -269,7 +270,8 @@ private:
     FString EarthCloudMaterialPath = TEXT("/Game/Planets/Earth/M_Clouds.M_Clouds");
     FString EarthAtmosphereMaterialPath = TEXT("/Game/Planets/Earth/M_Atmosphere.M_Atmosphere");
     double SunIntensityLux = 8.0;
-    double SunIlluminanceScale = 1.0;
+    double SunIlluminanceScale = 1.0; // Renderer-local calibration, not overwritten by a scene.
+    double SceneSunlightIntensityScale = 1.0; // [-], reset on every manifest
     double FillLightIntensityLux = 1.5;
     double MaterialExposureBias = 0.0;
     double ActiveMaterialAmbient = 0.18;

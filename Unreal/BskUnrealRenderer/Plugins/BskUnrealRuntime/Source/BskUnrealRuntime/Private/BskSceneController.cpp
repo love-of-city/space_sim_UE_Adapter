@@ -2052,10 +2052,15 @@ void ABskSceneController::ApplyVisualMountTransform(AActor* Actor, const FBskVis
 void ABskSceneController::ConfigureManifestLighting(const FBskSceneManifest& Manifest)
 {
     bUseManifestSceneLighting = Manifest.bUseSceneLighting;
+    SceneSunlightIntensityScale = Manifest.SunlightIntensityScale;
+    const float InitialSunLux = static_cast<float>(BskCelestialLighting::ScaleIlluminanceLux(
+        SunIntensityLux, SceneSunlightIntensityScale));
+    UE_LOG(LogBskUnreal, Display, TEXT("Scene sunlight intensity scale=%.4f (rendering only)"),
+        SceneSunlightIntensityScale);
     const double AmbientPeak = FMath::Max3(Manifest.HeadlightAmbientRgb.X, Manifest.HeadlightAmbientRgb.Y, Manifest.HeadlightAmbientRgb.Z);
     ActiveMaterialAmbient = Manifest.bUseSceneLighting ? 1.8 * AmbientPeak : 0.18;
-    if (SunLight) SunLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : static_cast<float>(SunIntensityLux));
-    if (CelestialSunLight) CelestialSunLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : static_cast<float>(SunIntensityLux));
+    if (SunLight) SunLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : InitialSunLux);
+    if (CelestialSunLight) CelestialSunLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : InitialSunLux);
     const double ManifestFillIntensity = Manifest.FillLightIntensityLux >= 0.0
         ? Manifest.FillLightIntensityLux
         : FillLightIntensityLux;
@@ -2984,7 +2989,8 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
                             BaseIlluminance,
                             Definition->LightReferenceDistanceMeters,
                             SourceDistanceMeters);
-                        const float UnoccludedLux = static_cast<float>(Illuminance * SunIlluminanceScale);
+                        const float UnoccludedLux = static_cast<float>(BskCelestialLighting::ScaleIlluminanceLux(
+                            Illuminance * SunIlluminanceScale, SceneSunlightIntensityScale));
                         SunLight->GetLightComponent()->SetIntensity(
                             UnoccludedLux * static_cast<float>(CurrentSolarVisibility));
                         if (CelestialSunLight)
@@ -3002,8 +3008,8 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
                                 SourceDistanceMeters / 149597870700.0,
                                 CurrentSunAngularDiameterDegrees,
                                 *CurrentSunSourceDirection.ToCompactString(),
-                                Illuminance * SunIlluminanceScale,
-                                Illuminance * SunIlluminanceScale * CurrentSolarVisibility,
+                                static_cast<double>(UnoccludedLux),
+                                static_cast<double>(UnoccludedLux) * CurrentSolarVisibility,
                                 CurrentSolarVisibility);
                         }
                     }

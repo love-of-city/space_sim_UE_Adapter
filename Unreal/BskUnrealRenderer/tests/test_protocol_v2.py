@@ -11,6 +11,7 @@ from bsk_render_adapter import (
     BskRecordingWriter,
     CameraVisual,
     RecordingOnlyPublisher,
+    SceneSettings,
     VisualElement,
     enableUnrealVisualization,
 )
@@ -48,6 +49,26 @@ class _Publisher:
 
     def close(self):
         pass
+
+
+class SceneSunlightTests(unittest.TestCase):
+    def test_scene_multiplier_reaches_manifest_including_zero(self):
+        for scale in (0, 0.5, 1, 2.5, 12500, 20000):
+            with self.subTest(scale=scale):
+                publisher = _Publisher()
+                bridge = BasiliskRenderBridge(publisher=publisher)
+                bridge.set_scene_settings(SceneSettings(sunlight_intensity_scale=scale))
+                bridge.Reset(0)
+                bridge.UpdateState(0)
+                self.assertEqual(publisher.manifest["settings"]["sunlight_intensity_scale"], scale)
+                self.assertEqual(publisher.manifest["settings"]["fill_light_intensity_lux"], -1)
+                bridge.close()
+        self.assertEqual(SceneSettings().to_payload()["sunlight_intensity_scale"], 1)
+
+    def test_invalid_multiplier_is_rejected_before_network_send(self):
+        for scale in (-1, 20000.1, float("nan"), float("inf"), True, "2", None):
+            with self.subTest(scale=scale), self.assertRaises(ValueError):
+                SceneSettings(sunlight_intensity_scale=scale).to_payload()
 
 
 class RecordingTransportTests(unittest.TestCase):

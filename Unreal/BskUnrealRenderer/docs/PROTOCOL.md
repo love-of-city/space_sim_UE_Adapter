@@ -166,6 +166,17 @@ illuminance value is a renderer exposure setting, not a second ephemeris or
 dynamics model. `settings.fill_light_intensity_lux: 0` disables readability
 fill so the anti-solar side remains dark.
 
+`settings.sunlight_intensity_scale` is an optional finite JSON number in
+`[0, 20000]`, defaulting to `1`. It multiplies the ephemeris-driven solar
+illuminance after distance scaling and renderer-local calibration, before
+local eclipse visibility is applied. Both local-object and celestial-surface
+sun lights use it; fill lighting, materials, exposure and authoritative states
+do not. Zero explicitly disables direct sunlight and is not a request for the
+legacy default reference illuminance. Missing fields reset the scene multiplier
+to one on every manifest, including after a zero-light scene. The receiver
+rejects strings, booleans, nulls and out-of-range values. Update/rebuild the UE
+runtime to use this additive version-2 setting; older receivers ignore it.
+
 `capture_products` is strict: the only version-2 values are `rgb`, `depth`,
 and `segmentation`; an unknown value rejects the manifest with a clear error.
 The sender requests products, while the UE host retains authority over local
