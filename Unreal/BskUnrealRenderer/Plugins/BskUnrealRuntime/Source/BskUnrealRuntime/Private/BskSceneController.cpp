@@ -1463,6 +1463,11 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
     ManifestCelestialBodies.Reset();
     PrimaryDirectionalLightBodyId.Reset();
     bEphemerisDirectionalLightActive = false;
+    bEphemerisEarthLogged = false;
+    CurrentSunPositionMeters = FVector3d::ZeroVector;
+    CurrentSunRadiusMeters = 0.0;
+    CurrentSolarVisibility = 1.0;
+    SolarOccluders.Reset();
     CurrentSunAngularDiameterDegrees = SunVisualAngularDiameterDegrees;
     UpdateDecorativeSunScale();
     ManifestVisuals.Reset();
@@ -1538,7 +1543,21 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
         }
         else if (!CelestialActors.Contains(Definition.BodyId))
         {
-            if (AActor* Actor = SpawnCelestialBody(Definition)) CelestialActors.Add(Definition.BodyId, Actor);
+            if (AActor* Actor = SpawnCelestialBody(Definition))
+            {
+                // Celestial surfaces still receive sunlight when the spacecraft
+                // is eclipsed. Keep them off the local-object lighting channel.
+                TArray<UPrimitiveComponent*> Components;
+                Actor->GetComponents<UPrimitiveComponent>(Components);
+                for (UPrimitiveComponent* Component : Components)
+                {
+                    Component->SetLightingChannels(false, true, false);
+                    // Planetary umbra uses ephemeris geometry below; a 6,378 km
+                    // mesh must not enter the metre-scale arm shadow map.
+                    Component->SetCastShadow(false);
+                }
+                CelestialActors.Add(Definition.BodyId, Actor);
+            }
         }
     }
     if (PrimaryDirectionalLightBodyId.IsEmpty())
@@ -2036,6 +2055,7 @@ void ABskSceneController::ConfigureManifestLighting(const FBskSceneManifest& Man
     const double AmbientPeak = FMath::Max3(Manifest.HeadlightAmbientRgb.X, Manifest.HeadlightAmbientRgb.Y, Manifest.HeadlightAmbientRgb.Z);
     ActiveMaterialAmbient = Manifest.bUseSceneLighting ? 1.8 * AmbientPeak : 0.18;
     if (SunLight) SunLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : static_cast<float>(SunIntensityLux));
+    if (CelestialSunLight) CelestialSunLight->GetLightComponent()->SetIntensity(Manifest.bUseSceneLighting ? 0.0f : static_cast<float>(SunIntensityLux));
     const double ManifestFillIntensity = Manifest.FillLightIntensityLux >= 0.0
         ? Manifest.FillLightIntensityLux
         : FillLightIntensityLux;
@@ -2825,9 +2845,12 @@ FBskRenderFrame ABskSceneController::ExtrapolateFrame(
         const FString& Key = State.ObjectId.IsEmpty() ? State.Name : State.ObjectId;
         const FBskRenderObjectState* const* Prior = FromObjects.Find(Key);
         if (!Prior) continue;
-        const FVector3d Velocity = State.bHasVelocity
-            ? State.VelocityMetersPerSecond
-            : (State.PositionMeters - (*Prior)->PositionMeters) / SourceDeltaSeconds;
+        // Positions are relative to the moving render origin; wire velocities
+        // are inertial velocities expressed in the local axes (also used for
+        // orbital telemetry). Integrating those into local positions adds the
+        // spacecraft's ~7.6 km/s orbital motion a second time, then snaps back
+        // on every received frame. Differentiate the LOCAL positions instead.
+        const FVector3d Velocity = (State.PositionMeters - (*Prior)->PositionMeters) / SourceDeltaSeconds;
         State.PositionMeters += Velocity * ExtraSeconds;
         State.OrientationWxyz = ExtrapolateOrientation((*Prior)->OrientationWxyz, State.OrientationWxyz);
     }
@@ -2838,16 +2861,38 @@ FBskRenderFrame ABskSceneController::ExtrapolateFrame(
     {
         const FBskCelestialBodyState* const* Prior = FromCelestial.Find(State.BodyId);
         if (!Prior) continue;
-        const FVector3d FiniteDifferenceVelocity = (State.PositionMeters - (*Prior)->PositionMeters) / SourceDeltaSeconds;
-        const FVector3d Velocity = State.VelocityMetersPerSecond.IsNearlyZero() ? FiniteDifferenceVelocity : State.VelocityMetersPerSecond;
+        // Celestial positions use the same moving origin as ordinary objects.
+        // A nonzero inertial ephemeris velocity is not a local position derivative.
+        const FVector3d Velocity = (State.PositionMeters - (*Prior)->PositionMeters) / SourceDeltaSeconds;
         State.PositionMeters += Velocity * ExtraSeconds;
         State.OrientationWxyz = ExtrapolateOrientation((*Prior)->OrientationWxyz, State.OrientationWxyz);
     }
     return Result;
 }
 
+double ABskSceneController::SolarVisibilityAt(const FVector3d& ReceiverMeters) const
+{
+    double Visibility = 1.0;
+    for (const TPair<FVector3d, double>& Occluder : SolarOccluders)
+    {
+        Visibility = FMath::Min(Visibility, BskCelestialLighting::VisibleSourceFraction(
+            CurrentSunPositionMeters, CurrentSunRadiusMeters, Occluder.Key, Occluder.Value, ReceiverMeters));
+    }
+    return Visibility;
+}
+
 void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
 {
+    // Read ALL occluders from this frame first, irrespective of message order.
+    SolarOccluders.Reset();
+    for (const FBskCelestialBodyState& State : Frame.CelestialBodies)
+    {
+        const FBskCelestialBodyDefinition* Definition = ManifestCelestialBodies.Find(State.BodyId);
+        if (Definition && !Definition->bLuminous && Definition->EquatorialRadiusMeters > 0.0)
+        {
+            SolarOccluders.Emplace(State.PositionMeters, Definition->EquatorialRadiusMeters);
+        }
+    }
     for (const FBskCelestialBodyState& State : Frame.CelestialBodies)
     {
         AActor* Actor = CelestialActors.FindRef(State.BodyId);
@@ -2870,6 +2915,17 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
             EarthAtmosphere->SetActorLocation(Location, false, nullptr, ETeleportType::TeleportPhysics);
             EarthAtmosphere->SetActorHiddenInGame(false);
         }
+        if (!bEphemerisEarthLogged && State.BodyId.Equals(TEXT("earth"), ESearchCase::IgnoreCase))
+        {
+            if (const FBskCelestialBodyDefinition* Definition = ManifestCelestialBodies.Find(State.BodyId))
+            {
+                bEphemerisEarthLogged = true;
+                UE_LOG(LogBskUnreal, Display,
+                    TEXT("Ephemeris Earth active center_distance_km=%.3f radius_km=%.3f local_origin_altitude_km=%.3f"),
+                    State.PositionMeters.Length() / 1000.0, Definition->EquatorialRadiusMeters / 1000.0,
+                    (State.PositionMeters.Length() - Definition->EquatorialRadiusMeters) / 1000.0);
+            }
+        }
         if (State.BodyId == PrimaryDirectionalLightBodyId)
         {
             const FBskCelestialBodyDefinition* Definition = ManifestCelestialBodies.Find(State.BodyId);
@@ -2878,6 +2934,21 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
             if (Definition && !DirectionTowardSource.IsNearlyZero())
             {
                 CurrentSunSourceDirection = DirectionTowardSource;
+                CurrentSunPositionMeters = State.PositionMeters;
+                CurrentSunRadiusMeters = Definition->EquatorialRadiusMeters;
+                if (DecorativeSunActor)
+                {
+                    DecorativeSunActor->SetActorRotation(FQuat(Converter.ActiveLocalWxyzToUnreal(State.OrientationWxyz)));
+                }
+                const double PreviousVisibility = CurrentSolarVisibility;
+                CurrentSolarVisibility = SolarVisibilityAt(FVector3d::ZeroVector);
+                if (!bEphemerisDirectionalLightActive ||
+                    (PreviousVisibility <= 1.0e-6) != (CurrentSolarVisibility <= 1.0e-6))
+                {
+                    UE_LOG(LogBskUnreal, Display,
+                        TEXT("Ephemeris solar visibility at local origin=%.6f occluders=%d"),
+                        CurrentSolarVisibility, SolarOccluders.Num());
+                }
                 if (Definition->EquatorialRadiusMeters > 0.0 &&
                     SourceDistanceMeters > Definition->EquatorialRadiusMeters)
                 {
@@ -2898,6 +2969,10 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
                     {
                         const bool bWasEphemerisActive = bEphemerisDirectionalLightActive;
                         SunLight->SetActorRotation(LightRayDirection.Rotation());
+                        if (UDirectionalLightComponent* Directional = Cast<UDirectionalLightComponent>(SunLight->GetLightComponent()))
+                        {
+                            Directional->SetLightSourceAngle(static_cast<float>(CurrentSunAngularDiameterDegrees));
+                        }
                         SunLight->GetLightComponent()->SetLightColor(FLinearColor(
                             static_cast<float>(Definition->LightColorRgb.X),
                             static_cast<float>(Definition->LightColorRgb.Y),
@@ -2909,16 +2984,27 @@ void ABskSceneController::UpdateCelestialBodies(const FBskRenderFrame& Frame)
                             BaseIlluminance,
                             Definition->LightReferenceDistanceMeters,
                             SourceDistanceMeters);
-                        SunLight->GetLightComponent()->SetIntensity(static_cast<float>(Illuminance * SunIlluminanceScale));
+                        const float UnoccludedLux = static_cast<float>(Illuminance * SunIlluminanceScale);
+                        SunLight->GetLightComponent()->SetIntensity(
+                            UnoccludedLux * static_cast<float>(CurrentSolarVisibility));
+                        if (CelestialSunLight)
+                        {
+                            CelestialSunLight->SetActorRotation(LightRayDirection.Rotation());
+                            CelestialSunLight->GetLightComponent()->SetLightColor(
+                                SunLight->GetLightComponent()->GetLightColor());
+                            CelestialSunLight->GetLightComponent()->SetIntensity(UnoccludedLux);
+                        }
                         bEphemerisDirectionalLightActive = true;
                         if (!bWasEphemerisActive)
                         {
                             UE_LOG(LogBskUnreal, Display,
-                                TEXT("Ephemeris Sun active distance=%.6f AU angular_diameter=%.4f deg direction=%s illuminance=%.4f lux"),
+                                TEXT("Ephemeris Sun active distance=%.6f AU angular_diameter=%.4f deg direction=%s unoccluded_lux=%.4f local_lux=%.4f visibility=%.6f"),
                                 SourceDistanceMeters / 149597870700.0,
                                 CurrentSunAngularDiameterDegrees,
                                 *CurrentSunSourceDirection.ToCompactString(),
-                                Illuminance * SunIlluminanceScale);
+                                Illuminance * SunIlluminanceScale,
+                                Illuminance * SunIlluminanceScale * CurrentSolarVisibility,
+                                CurrentSolarVisibility);
                         }
                     }
                 }
@@ -3246,17 +3332,42 @@ void ABskSceneController::UpdateDecorativeSunPlacement()
     {
         Player->GetPlayerViewPoint(ViewLocation, ViewRotation);
     }
-    const FVector DirectionTowardSun = CurrentSunSourceDirection.GetSafeNormal();
+    FVector3d ViewMeters = FVector3d(ViewLocation) / Converter.GetCentimetersPerMeter();
+    if (Converter.MirrorsLocalY()) ViewMeters.Y = -ViewMeters.Y;
+    const double Visibility = SolarVisibilityAt(ViewMeters);
+    // A near-camera Sun proxy would otherwise draw in FRONT of the Earth
+    // during eclipse. Use physical geometry, not the proxy's depth.
+    DecorativeSunActor->SetActorHiddenInGame(Visibility <= 1.0e-6);
+    if (DecorativeSunComponent)
+    {
+        if (UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(DecorativeSunComponent->GetMaterial(0)))
+        {
+            Material->SetScalarParameterValue(TEXT("EmissiveStrength"),
+                static_cast<float>(SunVisualEmissiveStrength * Visibility));
+        }
+    }
+    const FVector DirectionTowardSun = CurrentSunRadiusMeters > 0.0
+        ? FVector(Converter.LocalMetersToUnrealCentimeters(CurrentSunPositionMeters - ViewMeters)).GetSafeNormal()
+        : CurrentSunSourceDirection.GetSafeNormal();
     if (DirectionTowardSun.IsNearlyZero()) return;
     const double MaximumDistanceMeters = FMath::Max(1000.0, CelestialVaultRadiusKilometers * 1000.0 * 0.92);
     const double EffectiveDistanceMeters = FMath::Min(SunVisualDistanceMeters, MaximumDistanceMeters);
     const double DistanceCentimeters = EffectiveDistanceMeters * Converter.GetCentimetersPerMeter();
     const FVector SunLocation = ViewLocation + DirectionTowardSun * DistanceCentimeters;
-    DecorativeSunActor->SetActorLocation(
-        SunLocation,
-        false,
-        nullptr,
-        ETeleportType::TeleportPhysics);
+    // The decorative Sun is a camera-relative render proxy, not a physical
+    // body. Avoid moving it by tiny sub-pixel amounts every game tick: at the
+    // old astronomical proxy distance this repeatedly invalidated LWC tiles
+    // used by the attached Cascade particles and could make the main viewport
+    // flash. The auxiliary SceneCapture cameras do not see this proxy, which
+    // is why they did not exhibit the same symptom.
+    if (!DecorativeSunActor->GetActorLocation().Equals(SunLocation, 1.0f))
+    {
+        DecorativeSunActor->SetActorLocation(
+            SunLocation,
+            false,
+            nullptr,
+            ETeleportType::TeleportPhysics);
+    }
 }
 
 void ABskSceneController::CreateDecorativeEarth()
@@ -3323,6 +3434,23 @@ void ABskSceneController::CreateEnvironment()
     // MuJoCo's default viewer uses a camera/headlight contribution in addition
     // to its key light.  This low-intensity, shadowless fill preserves the same
     // useful shape readability without pretending to be another physical sun.
+    if (ADirectionalLight* CelestialSun = GetWorld()->SpawnActor<ADirectionalLight>(
+        FVector::ZeroVector, SunRotation, Params))
+    {
+        CelestialSunLight = CelestialSun;
+        ULightComponent* Light = CelestialSun->GetLightComponent();
+        Light->SetMobility(EComponentMobility::Movable);
+        Light->SetLightingChannels(false, true, false);
+        Light->SetIntensity(static_cast<float>(SunIntensityLux));
+        Light->SetCastShadows(false);
+        Light->SetIndirectLightingIntensity(0.0f);
+        Light->SetAffectTranslucentLighting(true);
+        if (UDirectionalLightComponent* Directional = Cast<UDirectionalLightComponent>(Light))
+        {
+            Directional->SetAtmosphereSunLight(false);
+        }
+    }
+
     if (FillLightIntensityLux > 0.0)
     {
         const FRotator FillRotation(-SunRotation.Pitch * 0.5, SunRotation.Yaw + 165.0, 0.0);

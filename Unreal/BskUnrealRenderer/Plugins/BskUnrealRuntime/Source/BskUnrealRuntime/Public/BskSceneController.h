@@ -115,6 +115,7 @@ protected:
 
 private:
     friend class FBskBuiltinCaptureProvider;
+    friend class FBskLocalFrameExtrapolationTest;
     struct FObjectSpec
     {
         FString AssetType = TEXT("placeholder");
@@ -164,6 +165,7 @@ private:
     void RefreshVisualVisibility(const FString& VisualId);
     void AttachManifestChildren();
     void UpdateCelestialBodies(const FBskRenderFrame& Frame);
+    double SolarVisibilityAt(const FVector3d& ReceiverMeters) const;
     void UpdateVisualStates(const FBskRenderFrame& Frame);
     void UpdateLightTargets();
     void ConfigureManifestLighting(const FBskSceneManifest& Manifest);
@@ -206,6 +208,7 @@ private:
     TMap<FString, int64> CameraNextDataCaptureSimulationNanoseconds;
     TMap<FString, bool> CameraPictureInPictureVisibility;
     TObjectPtr<ADirectionalLight> SunLight;
+    TObjectPtr<ADirectionalLight> CelestialSunLight;
     TObjectPtr<ADirectionalLight> FillLight;
     TObjectPtr<ASpotLight> Headlight;
     TObjectPtr<APostProcessVolume> ExposureVolume;
@@ -241,7 +244,7 @@ private:
     double StarRadiusMeters = 250.0;
     double CelestialVaultRadiusKilometers = 500000.0;
     double CelestialBackgroundIntensity = 0.35;
-    double SunVisualDistanceMeters = 450000000.0;
+    double SunVisualDistanceMeters = 10000.0;
     double SunVisualAngularDiameterDegrees = 2.0;
     double CurrentSunAngularDiameterDegrees = 2.0;
     double SunVisualEmissiveStrength = 1.5;
@@ -274,6 +277,11 @@ private:
     bool bEphemerisDirectionalLightActive = false;
     FRotator SunRotation = FRotator(-25.0, -35.0, 15.0);
     FVector CurrentSunSourceDirection = FVector::ForwardVector;
+    FVector3d CurrentSunPositionMeters = FVector3d::ZeroVector;
+    double CurrentSunRadiusMeters = 0.0;
+    double CurrentSolarVisibility = 1.0;
+    bool bEphemerisEarthLogged = false;
+    TArray<TPair<FVector3d, double>> SolarOccluders;
     FVector3d CameraPositionMeters = FVector3d(10.0, -16.0, 8.0);
     FVector3d CameraLookAtMeters = FVector3d(0.0, 3.0, 0.0);
     int64 LastFrameId = -1;

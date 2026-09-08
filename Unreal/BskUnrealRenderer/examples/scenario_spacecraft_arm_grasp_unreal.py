@@ -20,7 +20,7 @@ def load_native_grasp_module(model_root: Path) -> ModuleType:
     produces a DLL-symbol collision, so a placeholder defers that optional API.
     """
 
-    scenario_path = model_root / "scenarios" / "scenario_cubesat_so101_grasp.py"
+    scenario_path = model_root / "scenarios" / ("scenario_sarm_grasp.py" if (model_root / "scenarios" / "scenario_sarm_grasp.py").is_file() else "scenario_cubesat_so101_grasp.py")
     if not scenario_path.is_file():
         raise FileNotFoundError(f"native grasp scenario does not exist: {scenario_path}")
     previous_mujoco = sys.modules.get("mujoco")

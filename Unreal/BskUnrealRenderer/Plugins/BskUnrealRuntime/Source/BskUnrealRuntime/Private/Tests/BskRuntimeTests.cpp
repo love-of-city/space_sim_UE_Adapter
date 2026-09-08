@@ -99,6 +99,53 @@ bool FBskCelestialLightManifestTest::RunTest(const FString& Parameters)
     return true;
 }
 
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskSolarOccultationTest,
+    "BskUnreal.Celestial.SolarOccultationAndRebasing",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskSolarOccultationTest::RunTest(const FString& Parameters)
+{
+    constexpr double AU = 149597870700.0;
+    constexpr double SunRadius = 695000000.0;
+    constexpr double EarthRadius = 6378136.6;
+    constexpr double EarthDistance = EarthRadius + 500000.0;
+    const FVector3d Sun(AU, 0.0, 0.0);
+    const FVector3d NightEarth(EarthDistance, 0.0, 0.0);
+    TestEqual(TEXT("night-side Earth fully occults Sun"),
+        BskCelestialLighting::VisibleSourceFraction(Sun, SunRadius, NightEarth, EarthRadius), 0.0);
+    TestEqual(TEXT("day-side Earth is behind observer"),
+        BskCelestialLighting::VisibleSourceFraction(Sun, SunRadius, -NightEarth, EarthRadius), 1.0);
+    TestEqual(TEXT("body behind Sun cannot eclipse it"),
+        BskCelestialLighting::VisibleSourceFraction(Sun, SunRadius, FVector3d(2.0 * AU, 0, 0), EarthRadius), 1.0);
+
+    const double EarthAngle = FMath::Asin(EarthRadius / EarthDistance);
+    const double SunAngle = FMath::Asin(SunRadius / AU);
+    const FVector3d LimbEarth(EarthDistance * FMath::Cos(EarthAngle), EarthDistance * FMath::Sin(EarthAngle), 0);
+    const double Half = BskCelestialLighting::VisibleSourceFraction(Sun, SunRadius, LimbEarth, EarthRadius);
+    TestTrue(TEXT("Earth limb produces partial eclipse"), Half > 0.45 && Half < 0.55);
+    const FVector3d Shift(7000000, -12000000, 3300000);
+    TestTrue(TEXT("receiver/source/occluder translation preserves shadow fraction"),
+        FMath::IsNearlyEqual(Half, BskCelestialLighting::VisibleSourceFraction(
+            Sun + Shift, SunRadius, LimbEarth + Shift, EarthRadius, Shift), 1.0e-7));
+    double Previous = 0.0;
+    for (int32 Index = 0; Index <= 100; ++Index)
+    {
+        const double Angle = EarthAngle - 1.01 * SunAngle + 2.02 * SunAngle * Index / 100.0;
+        const FVector3d Earth(EarthDistance * FMath::Cos(Angle), EarthDistance * FMath::Sin(Angle), 0);
+        const double Visible = BskCelestialLighting::VisibleSourceFraction(Sun, SunRadius, Earth, EarthRadius);
+        TestTrue(TEXT("penumbra remains finite/bounded/monotonic"),
+            FMath::IsFinite(Visible) && Visible >= 0.0 && Visible <= 1.0 && Visible + 1.0e-7 >= Previous);
+        Previous = Visible;
+    }
+    TestEqual(TEXT("penumbra exits to full daylight"), Previous, 1.0);
+    const double Annular = BskCelestialLighting::VisibleSourceFraction(
+        FVector3d(10000, 0, 0), 10, FVector3d(1000, 0, 0), 0.1);
+    TestTrue(TEXT("smaller concentric body leaves visible solar annulus"), FMath::IsNearlyEqual(Annular, 0.99, 1.0e-6));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FBskProtocolFragmentationTest,
     "BskUnreal.Protocol.FragmentedLengthPrefixedJson",
@@ -466,6 +513,58 @@ bool FBskRuntimeExtensionRegistryTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("extension unregisters"), Subsystem->UnregisterRenderExtension(Extension->GetExtensionName()));
     Subsystem->NotifyEventApplied(Event);
     TestEqual(TEXT("unregistered extension not notified"), Extension->EventCount, 1);
+    return true;
+}
+
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskLocalFrameExtrapolationTest,
+    "BskUnreal.Presentation.MovingOriginExtrapolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskLocalFrameExtrapolationTest::RunTest(const FString& Parameters)
+{
+    ABskSceneController* Controller = NewObject<ABskSceneController>();
+    Controller->MaxExtrapolationSeconds = 0.05;
+    FBskRenderFrame From;
+    From.SimulationTimeNanoseconds = 1000000000;
+    FBskRenderObjectState Bus;
+    Bus.ObjectId = TEXT("teleop/cubesat_bus");
+    Bus.PositionMeters = FVector3d::ZeroVector;
+    Bus.bHasVelocity = true;
+    Bus.VelocityMetersPerSecond = FVector3d(0.0, 7600.0, 0.0);
+    From.Objects.Add(Bus);
+    FBskRenderObjectState Wrist = Bus;
+    Wrist.ObjectId = TEXT("teleop/link6");
+    Wrist.PositionMeters = FVector3d(0.0, 0.0, 0.2);
+    From.Objects.Add(Wrist);
+    FBskCelestialBodyState Sun;
+    Sun.BodyId = TEXT("sun");
+    Sun.PositionMeters = FVector3d(1.5e11, 0.0, 0.0);
+    Sun.VelocityMetersPerSecond = FVector3d(1.0, 20.0, 0.0);
+    From.CelestialBodies.Add(Sun);
+    FBskRenderFrame To = From;
+    To.SimulationTimeNanoseconds += 40000000; // 40 ms source interval.
+    To.OriginInertialMeters.Y += 304.0;
+    To.Objects[1].PositionMeters.X += 0.004; // 0.1 m/s local wrist motion.
+    To.CelestialBodies[0].PositionMeters.Y -= 303.2; // (20 - 7600) m/s.
+
+    const FBskRenderFrame Result = Controller->ExtrapolateFrame(From, To, 0.02);
+    TestTrue(TEXT("origin-following bus does not jump 152 metres between packets"),
+        Result.Objects[0].PositionMeters.IsNearlyZero());
+    TestTrue(TEXT("wrist follows its local motion, not the orbital velocity"),
+        Result.Objects[1].PositionMeters.Equals(FVector3d(0.006, 0.0, 0.2), 1.0e-9));
+    TestTrue(TEXT("celestial body uses the moving local frame too"),
+        FMath::IsNearlyEqual(Result.CelestialBodies[0].PositionMeters.Y, -454.8, 1.0e-6));
+    TestEqual(TEXT("inertial velocity remains available for telemetry"),
+        Result.Objects[0].VelocityMetersPerSecond.Y, 7600.0);
+    TestEqual(TEXT("authoritative target frame is not modified"), To.Objects[1].PositionMeters.X, 0.004);
+    TestTrue(TEXT("extrapolation is capped at 50 ms"),
+        FMath::IsNearlyEqual(Controller->ExtrapolateFrame(From, To, 1.0).Objects[1].PositionMeters.X, 0.009, 1.0e-9));
+    TestTrue(TEXT("duplicate timestamps do not extrapolate"),
+        Controller->ExtrapolateFrame(To, To, 0.02).Objects[1].PositionMeters.Equals(To.Objects[1].PositionMeters));
+    TestTrue(TEXT("negative prediction duration holds the target"),
+        Controller->ExtrapolateFrame(From, To, -1.0).Objects[1].PositionMeters.Equals(To.Objects[1].PositionMeters));
     return true;
 }
 

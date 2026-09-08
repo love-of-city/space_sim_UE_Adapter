@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 import xml.etree.ElementTree as ET
@@ -370,16 +371,19 @@ def parse_mjcf_scene_metadata(mjcf_path: str | Path, namespace: str = "") -> Mjc
     def add_camera(node: ET.Element, parent_name: str) -> None:
         name = node.get("name", f"camera_{len(cameras)}")
         resolution = tuple(int(value) for value in node.get("resolution", "1920 1080").split())
-        if len(resolution) != 2:
+        if len(resolution) != 2 or any(value <= 0 for value in resolution):
             resolution = (1920, 1080)
         field_of_view = node.get("fovy")
         if field_of_view is not None:
-            field_of_view_rad = float(field_of_view) * 3.141592653589793 / 180.0
+            # MJCF fovy is vertical (degrees), even with compiler angle=radian.
+            # CameraVisual and UE use horizontal FOV. Preserve the XML framing.
+            vertical_fov_rad = math.radians(float(field_of_view))
+            aspect_ratio = resolution[0] / resolution[1]
+            field_of_view_rad = 2.0 * math.atan(math.tan(vertical_fov_rad / 2.0) * aspect_ratio)
         else:
             sensor = _vec2(node.get("sensorsize"), (0.00576, 0.00324))
             focal = _vec2(node.get("focal"), (0.0036, 0.0036))
             # UE and the wire protocol use horizontal FOV.
-            import math
             field_of_view_rad = 2.0 * math.atan2(sensor[0], 2.0 * focal[0])
         source_quat = _quat(node.get("quat"))
         cameras.append({

@@ -6,6 +6,7 @@
 #include "Components/InputComponent.h"
 #include "InputCoreTypes.h"
 #include "GameFramework/FloatingPawnMovement.h"
+#include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 
 ABskCameraPawn::ABskCameraPawn()
@@ -34,8 +35,9 @@ void ABskCameraPawn::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     if (CameraMode == EBskCameraMode::MainView)
     {
-        SetActorLocation(MainViewLocation);
-        if (Controller) Controller->SetControlRotation(MainViewRotation);
+        // The main viewport is driven by SetMainViewTransform().  Re-applying
+        // the same transform every render tick causes needless camera/LWC
+        // updates and can make the viewport visibly flicker.
         return;
     }
     if (CameraMode == EBskCameraMode::Free)
@@ -43,12 +45,30 @@ void ABskCameraPawn::Tick(float DeltaSeconds)
         FVector MoveDirection = FVector::ZeroVector;
         const FRotator ControlRotation = Controller ? Controller->GetControlRotation() : GetActorRotation();
         const FRotationMatrix ControlMatrix(ControlRotation);
-        if (bMoveForward) MoveDirection += ControlMatrix.GetUnitAxis(EAxis::X);
-        if (bMoveBackward) MoveDirection -= ControlMatrix.GetUnitAxis(EAxis::X);
-        if (bMoveRight) MoveDirection += ControlMatrix.GetUnitAxis(EAxis::Y);
-        if (bMoveLeft) MoveDirection -= ControlMatrix.GetUnitAxis(EAxis::Y);
-        if (bMoveUp) MoveDirection += FVector::UpVector;
-        if (bMoveDown) MoveDirection -= FVector::UpVector;
+        // Poll the PlayerController as a final fallback.  Pixel Streaming
+        // injects browser key events into the controller, but depending on the
+        // active input component those events may not invoke a pawn BindKey
+        // callback.  IsInputKeyDown observes the same authoritative key state
+        // and makes held W/A/S/D/Q/E movement independent of that callback.
+        const APlayerController* PlayerController = Cast<APlayerController>(Controller);
+        const bool bForwardDown = bMoveForward || (PlayerController && PlayerController->IsInputKeyDown(EKeys::W));
+        const bool bBackwardDown = bMoveBackward || (PlayerController && PlayerController->IsInputKeyDown(EKeys::S));
+        const bool bRightDown = bMoveRight || (PlayerController && PlayerController->IsInputKeyDown(EKeys::D));
+        const bool bLeftDown = bMoveLeft || (PlayerController && PlayerController->IsInputKeyDown(EKeys::A));
+        const bool bUpDown = bMoveUp || (PlayerController && PlayerController->IsInputKeyDown(EKeys::E));
+        const bool bDownDown = bMoveDown || (PlayerController && PlayerController->IsInputKeyDown(EKeys::Q));
+        const float Forward = (bForwardDown || bBackwardDown)
+            ? (bForwardDown ? 1.0f : 0.0f) - (bBackwardDown ? 1.0f : 0.0f)
+            : MoveForwardAxisValue;
+        const float Right = (bRightDown || bLeftDown)
+            ? (bRightDown ? 1.0f : 0.0f) - (bLeftDown ? 1.0f : 0.0f)
+            : MoveRightAxisValue;
+        const float Up = (bUpDown || bDownDown)
+            ? (bUpDown ? 1.0f : 0.0f) - (bDownDown ? 1.0f : 0.0f)
+            : MoveUpAxisValue;
+        if (!FMath::IsNearlyZero(Forward)) MoveDirection += ControlMatrix.GetUnitAxis(EAxis::X) * Forward;
+        if (!FMath::IsNearlyZero(Right)) MoveDirection += ControlMatrix.GetUnitAxis(EAxis::Y) * Right;
+        if (!FMath::IsNearlyZero(Up)) MoveDirection += FVector::UpVector * Up;
         if (!MoveDirection.IsNearlyZero())
         {
             const FVector Delta = MoveDirection.GetSafeNormal() * FreeCameraSpeedCentimetersPerSecond * DeltaSeconds;
@@ -76,6 +96,8 @@ void ABskCameraPawn::Tick(float DeltaSeconds)
 
 void ABskCameraPawn::SetMainViewTransform(const FVector& Location, const FRotator& Rotation)
 {
+    const bool bLocationChanged = !MainViewLocation.Equals(Location, 0.01f);
+    const bool bRotationChanged = !MainViewRotation.Equals(Rotation, 0.01f);
     MainViewLocation = Location;
     MainViewRotation = Rotation;
     MainTargetActor = nullptr;
@@ -84,8 +106,8 @@ void ABskCameraPawn::SetMainViewTransform(const FVector& Location, const FRotato
     {
         TargetActor = nullptr;
         CameraMode = EBskCameraMode::MainView;
-        SetActorLocation(MainViewLocation);
-        if (Controller) Controller->SetControlRotation(MainViewRotation);
+        if (bLocationChanged) SetActorLocation(MainViewLocation);
+        if (bRotationChanged && Controller) Controller->SetControlRotation(MainViewRotation);
     }
 }
 
@@ -144,6 +166,9 @@ void ABskCameraPawn::ReturnToMainView()
     bMoveLeft = false;
     bMoveUp = false;
     bMoveDown = false;
+    MoveForwardAxisValue = 0.0f;
+    MoveRightAxisValue = 0.0f;
+    MoveUpAxisValue = 0.0f;
     if (GetMovementComponent()) GetMovementComponent()->StopMovementImmediately();
     if (CameraMode == EBskCameraMode::MainView)
     {
@@ -171,10 +196,18 @@ void ABskCameraPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputCompo
     PlayerInputComponent->BindKey(EKeys::E, IE_Released, this, &ABskCameraPawn::MoveUpReleased);
     PlayerInputComponent->BindKey(EKeys::Q, IE_Pressed, this, &ABskCameraPawn::MoveDownPressed);
     PlayerInputComponent->BindKey(EKeys::Q, IE_Released, this, &ABskCameraPawn::MoveDownReleased);
+    // Keep the legacy axis path as a fallback.  Pixel Streaming and the
+    // EnhancedInput component do not always deliver BindKey events uniformly
+    // across browser focus changes, while axis mappings continue to emit the
+    // held-key state.  The Tick() code uses whichever path is available.
+    PlayerInputComponent->BindAxis(TEXT("MoveForward"), this, &ABskCameraPawn::MoveForwardAxis);
+    PlayerInputComponent->BindAxis(TEXT("MoveRight"), this, &ABskCameraPawn::MoveRightAxis);
+    PlayerInputComponent->BindAxis(TEXT("MoveUp"), this, &ABskCameraPawn::MoveUpAxis);
     PlayerInputComponent->BindAxis(TEXT("Turn"), this, &ABskCameraPawn::Turn);
     PlayerInputComponent->BindAxis(TEXT("LookUp"), this, &ABskCameraPawn::LookUp);
     PlayerInputComponent->BindAction(TEXT("ToggleFreeCamera"), IE_Pressed, this, &ABskCameraPawn::ToggleFreeCamera);
     PlayerInputComponent->BindAction(TEXT("ReturnMainView"), IE_Pressed, this, &ABskCameraPawn::ReturnToMainView);
+    PlayerInputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ABskCameraPawn::ReturnToMainView);
     PlayerInputComponent->BindAction(TEXT("ToggleCssVisuals"), IE_Pressed, this, &ABskCameraPawn::ToggleCssVisuals);
     PlayerInputComponent->BindAction(TEXT("ToggleGenericSensorVisuals"), IE_Pressed, this, &ABskCameraPawn::ToggleGenericSensorVisuals);
     PlayerInputComponent->BindAction(TEXT("ToggleTransceiverVisuals"), IE_Pressed, this, &ABskCameraPawn::ToggleTransceiverVisuals);
@@ -186,14 +219,17 @@ void ABskCameraPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputCompo
 
 void ABskCameraPawn::MoveForwardPressed() { bMoveForward = true; }
 void ABskCameraPawn::MoveForwardReleased() { bMoveForward = false; }
+void ABskCameraPawn::MoveForwardAxis(float Value) { MoveForwardAxisValue = FMath::Clamp(Value, -1.0f, 1.0f); }
 void ABskCameraPawn::MoveBackwardPressed() { bMoveBackward = true; }
 void ABskCameraPawn::MoveBackwardReleased() { bMoveBackward = false; }
 void ABskCameraPawn::MoveRightPressed() { bMoveRight = true; }
 void ABskCameraPawn::MoveRightReleased() { bMoveRight = false; }
+void ABskCameraPawn::MoveRightAxis(float Value) { MoveRightAxisValue = FMath::Clamp(Value, -1.0f, 1.0f); }
 void ABskCameraPawn::MoveLeftPressed() { bMoveLeft = true; }
 void ABskCameraPawn::MoveLeftReleased() { bMoveLeft = false; }
 void ABskCameraPawn::MoveUpPressed() { bMoveUp = true; }
 void ABskCameraPawn::MoveUpReleased() { bMoveUp = false; }
+void ABskCameraPawn::MoveUpAxis(float Value) { MoveUpAxisValue = FMath::Clamp(Value, -1.0f, 1.0f); }
 void ABskCameraPawn::MoveDownPressed() { bMoveDown = true; }
 void ABskCameraPawn::MoveDownReleased() { bMoveDown = false; }
 void ABskCameraPawn::Turn(float Value)

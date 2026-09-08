@@ -43,7 +43,7 @@
       15.0
     ],
     "sun_visual_enabled": true,
-    "sun_visual_distance_m": 450000000.0,
+    "sun_visual_distance_m": 10000.0,
     "sun_visual_angular_diameter_deg": 2.0,
     "sun_visual_emissive_strength": 1.5,
     "sun_visual_effects_enabled": true,
@@ -75,7 +75,7 @@
     "earth_atmosphere_material": "/Game/Planets/Earth/M_Atmosphere.M_Atmosphere",
     "earth_cloud_scale": 1.001,
     "earth_atmosphere_scale": 1.001,
-    "decorative_earth_enabled": true,
+    "decorative_earth_enabled": false,
     "decorative_earth_radius_m": 6371000.0,
     "decorative_earth_position_m": [
       20000000.0,

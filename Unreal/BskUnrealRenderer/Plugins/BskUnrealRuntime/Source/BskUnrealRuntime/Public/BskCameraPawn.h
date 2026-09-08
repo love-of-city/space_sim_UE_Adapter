@@ -42,14 +42,17 @@ private:
     void ReturnToMainView();
     void MoveForwardPressed();
     void MoveForwardReleased();
+    void MoveForwardAxis(float Value);
     void MoveBackwardPressed();
     void MoveBackwardReleased();
     void MoveRightPressed();
     void MoveRightReleased();
+    void MoveRightAxis(float Value);
     void MoveLeftPressed();
     void MoveLeftReleased();
     void MoveUpPressed();
     void MoveUpReleased();
+    void MoveUpAxis(float Value);
     void MoveDownPressed();
     void MoveDownReleased();
     void Turn(float Value);
@@ -84,6 +87,9 @@ private:
     bool bMoveLeft = false;
     bool bMoveUp = false;
     bool bMoveDown = false;
+    float MoveForwardAxisValue = 0.0f;
+    float MoveRightAxisValue = 0.0f;
+    float MoveUpAxisValue = 0.0f;
     float FreeCameraSpeedCentimetersPerSecond = 5000.0f;
     double OrbitDistanceCentimeters = 2500.0;
     double MainOrbitDistanceCentimeters = 2500.0;

@@ -84,7 +84,9 @@ class BasiliskDeviceIntegrationTests(unittest.TestCase):
         css.stateInMsg.subscribeTo(vehicle.scStateOutMsg)
         sun = messaging.SpicePlanetStateMsgPayload()
         sun.PositionVector = [1.0e11, 0.0, 0.0]
-        css.sunInMsg.subscribeTo(messaging.SpicePlanetStateMsg().write(sun))
+        # The SWIG reader does not own its publisher; retain it through the run.
+        sun_message = messaging.SpicePlanetStateMsg().write(sun)
+        css.sunInMsg.subscribeTo(sun_message)
         simulation.AddModelToTask("deviceTask", css)
 
         publisher = _Publisher()
