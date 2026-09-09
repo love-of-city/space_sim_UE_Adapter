@@ -2,9 +2,11 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/SpectatorPawn.h"
+#include "BskCameraInput.h"
 #include "BskCameraPawn.generated.h"
 
 class UCameraComponent;
+class IPixelStreaming2InputHandler;
 
 UENUM(BlueprintType)
 enum class EBskCameraMode : uint8
@@ -24,6 +26,10 @@ public:
     ABskCameraPawn();
     UCameraComponent* GetBskCameraComponent() const { return Camera; }
     virtual void Tick(float DeltaSeconds) override;
+    virtual FRotator GetViewRotation() const override;
+    // Explicit browser commands bypass Slate focus and IME-dependent keyCode.
+    bool ApplyRemoteCameraInput(const FString& Descriptor);
+    bool IsFreeCameraActive() const { return bFreeCameraActive; }
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
     void SetMainViewTransform(const FVector& Location, const FRotator& Rotation);
@@ -38,6 +44,10 @@ public:
     void SetOrbitDistanceMeters(double DistanceMeters);
 
 private:
+    void RegisterRemoteCameraInput();
+    FString GetCameraDiagnostics() const;
+    void ApplyFreeLook(const FVector2D& Displacement);
+    void UpdateTrackingCamera();
     void ToggleFreeCamera();
     void ReturnToMainView();
     void MoveForwardPressed();
@@ -80,6 +90,13 @@ private:
     EBskCameraMode MainCameraMode = EBskCameraMode::MainView;
     FVector MainViewLocation = FVector::ZeroVector;
     FRotator MainViewRotation = FRotator::ZeroRotator;
+    TWeakPtr<IPixelStreaming2InputHandler> RemoteInputHandler;
+    FBskCameraInput RemoteCameraInput;
+    FQuat FreeCameraOrientation = FQuat::Identity;
+    double LastRemoteCameraInputSeconds = 0.0;
+    uint64 RemoteCameraPacketCount = 0;
+    FVector2D TotalRemoteLook = FVector2D::ZeroVector;
+    bool bRemoteCameraControl = false;
     bool bFreeCameraActive = false;
     bool bMoveForward = false;
     bool bMoveBackward = false;

@@ -315,3 +315,77 @@ their worker is behind. Disk writes run on a dedicated background thread. Render
 readback is currently synchronous and should be configured at a modest rate;
 an asynchronous GPU-readback provider can replace it through the existing
 provider registry without changing the wire contract.
+
+## Browser free-camera command (Pixel Streaming data channel)
+
+This is a player-view command, **not** a `bsk-render/2` dynamics/frame message.
+The operator page sends `PixelStreaming.emitCommand` with one string-valued
+`BskCameraInput` property containing JSON:
+
+```javascript
+stream.emitCommand({BskCameraInput: JSON.stringify({
+  version: 1, active: true,
+  forward: 1, right: 0, up: 0, boost: false,
+  look_dx: 12, look_dy: -4
+})});
+```
+
+All fields are required. `version` must be numeric `1`; `active` and `boost`
+must be booleans. Movement axes must be finite numbers within `[-1, 1]` and
+mouse displacements within `[-4096, 4096]`. Numeric strings and invalid packets
+are rejected without altering current input. Payloads over 2048 characters are
+rejected. Only the default/main streamer's input handler registers this command.
+
+`active` is an **absolute** state, not a toggle. Held-key snapshots and a heartbeat
+are sent at nominal 60 Hz with immediate key transitions. `look_dx/look_dy` are
+relative browser mouse displacements consumed once, with a fixed 0.12 degree
+increment per unit. Camera-local rotation vectors are accumulated as normalized
+quaternions: yaw and pitch can pass through either pole and any number of full
+turns, with no angular clamps or forced horizon leveling. Collinear mouse batches
+produce the same orientation. They are not normalized by video dimensions, FOV,
+or frame duration. Free mode drives the pawn/camera orientation independently of
+ControlRotation, so stock PlayerCameraManager pitch/roll clamps cannot truncate
+the view; leaving free mode restores the main pose and controller-follow flags. W/S use the current view direction,
+A/D the view-right direction, and Q/E world-up. Movement uses game-frame duration,
+1 metre/second, Shift boost x5, and diagonal magnitude capped at one.
+
+Browser camera keys are consumed before native SDK keyboard forwarding; SDK
+mouse input is disabled on this page. Remote mode excludes native pawn input
+fallbacks. C/Home/Escape, pointer unlock, blur/hide, form focus and stream disposal
+send an inactive zero state. A 0.5-second wall-time heartbeat watchdog also
+restores the latest main view on lost connections. Native UE-window keyboard
+controls remain available. Server frontend and runtime plugin must be updated
+together; this command does not affect mounted camera capture or simulation state.
+
+
+### Opt-in runtime camera diagnostics
+
+Launching with `-BskCameraDiagnostics` registers the read-only command
+`stream.emitCommand({BskCameraProbe: "state"})` on the default/main streamer.
+It is not registered in ordinary sessions. The requesting player (not all
+players) receives a Pixel Streaming `Response` JSON object with:
+
+- `type: "BskCameraDiagnostics"`, `free`, `remote`;
+- cumulative accepted `packets`, active `look_dx/look_dy`, `input_age` in wall seconds;
+- `orientation` (free-flight state), `actor`, `camera`, `control`, `pov` (last actual
+  PlayerCameraManager view), all quaternion arrays in UE `[x,y,z,w]` order;
+- `location` (UE cm text) and `view_target`.
+
+Register a frontend `addResponseEventListener` and filter `type` before querying.
+Query after a game frame to compare the last rendered POV against accepted input.
+The counters span the pawn's lifetime; compare deltas from a baseline. The free
+orientation is only authoritative while `free` is true. This probe changes no
+camera or simulation state, and does not require enabling arbitrary console commands.
+
+The operator frontend prefers raw `unadjustedMovement` pointer-lock and falls
+back only on `NotSupportedError`. The previous blanket switch to normal input
+was reverted after an operator reported unstable gain and camera jumps; a
+server-side RDP session is not evidence of a client's mouse capabilities.
+Normal/legacy fallback is explicitly labelled because system acceleration can
+still apply there. Lock-acquisition samples, discontinuous individual events
+(over 256 browser movement units), and stale buffers/events (over 200 ms) are
+discarded before transmission, not clamped into a large camera turn. Ordinary
+samples retain their fixed gain; cumulative camera angles remain unbounded.
+`window.__freeCameraDiagnostics()` on the operator page reports bounded, read-only
+mouse diagnostics. This frontend correction leaves the UE command schema and
+quaternion rotation unchanged; no running simulation restart is required.

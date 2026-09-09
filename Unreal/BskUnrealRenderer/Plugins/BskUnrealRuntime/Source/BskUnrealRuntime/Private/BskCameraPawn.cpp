@@ -2,7 +2,14 @@
 
 #include "BskSceneController.h"
 #include "BskRendererHUD.h"
+#include "Async/Async.h"
+#include "IPixelStreaming2Module.h"
+#include "IPixelStreaming2Streamer.h"
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Dom/JsonObject.h"
+#include "Misc/CommandLine.h"
+#include "Serialization/JsonSerializer.h"
 #include "Components/InputComponent.h"
 #include "InputCoreTypes.h"
 #include "GameFramework/FloatingPawnMovement.h"
@@ -33,6 +40,7 @@ ABskCameraPawn::ABskCameraPawn()
 void ABskCameraPawn::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    RegisterRemoteCameraInput();
     if (CameraMode == EBskCameraMode::MainView)
     {
         // The main viewport is driven by SetMainViewTransform().  Re-applying
@@ -42,9 +50,20 @@ void ABskCameraPawn::Tick(float DeltaSeconds)
     }
     if (CameraMode == EBskCameraMode::Free)
     {
+        if (bRemoteCameraControl)
+        {
+            // A closed tab, lost release, or disconnected data channel must
+            // never leave a camera flying. Use wall time, not simulation time.
+            if (FPlatformTime::Seconds() - LastRemoteCameraInputSeconds > FBskCameraInput::WatchdogSeconds)
+            {
+                ReturnToMainView();
+                return;
+            }
+            const FVector Delta = RemoteCameraInput.MovementDelta(FreeCameraOrientation, DeltaSeconds);
+            if (!Delta.IsNearlyZero()) SetActorLocation(GetActorLocation() + Delta, false);
+            return; // Do not combine remote input with native key/axis fallbacks.
+        }
         FVector MoveDirection = FVector::ZeroVector;
-        const FRotator ControlRotation = Controller ? Controller->GetControlRotation() : GetActorRotation();
-        const FRotationMatrix ControlMatrix(ControlRotation);
         // Poll the PlayerController as a final fallback.  Pixel Streaming
         // injects browser key events into the controller, but depending on the
         // active input component those events may not invoke a pawn BindKey
@@ -66,8 +85,8 @@ void ABskCameraPawn::Tick(float DeltaSeconds)
         const float Up = (bUpDown || bDownDown)
             ? (bUpDown ? 1.0f : 0.0f) - (bDownDown ? 1.0f : 0.0f)
             : MoveUpAxisValue;
-        if (!FMath::IsNearlyZero(Forward)) MoveDirection += ControlMatrix.GetUnitAxis(EAxis::X) * Forward;
-        if (!FMath::IsNearlyZero(Right)) MoveDirection += ControlMatrix.GetUnitAxis(EAxis::Y) * Right;
+        if (!FMath::IsNearlyZero(Forward)) MoveDirection += FreeCameraOrientation.GetAxisX() * Forward;
+        if (!FMath::IsNearlyZero(Right)) MoveDirection += FreeCameraOrientation.GetAxisY() * Right;
         if (!FMath::IsNearlyZero(Up)) MoveDirection += FVector::UpVector * Up;
         if (!MoveDirection.IsNearlyZero())
         {
@@ -78,6 +97,26 @@ void ABskCameraPawn::Tick(float DeltaSeconds)
         }
         return;
     }
+    UpdateTrackingCamera();
+}
+
+FRotator ABskCameraPawn::GetViewRotation() const
+{
+    return bFreeCameraActive ? FreeCameraOrientation.Rotator() : Super::GetViewRotation();
+}
+
+void ABskCameraPawn::ApplyFreeLook(const FVector2D& Displacement)
+{
+    if (Displacement.IsNearlyZero()) return;
+    FBskCameraInput Input;
+    Input.bActive = true;
+    Input.Look = Displacement;
+    FreeCameraOrientation = Input.ApplyLook(FreeCameraOrientation);
+    SetActorRotation(FreeCameraOrientation);
+}
+
+void ABskCameraPawn::UpdateTrackingCamera()
+{
     if (!IsValid(TargetActor)) return;
     const FVector TargetLocation = TargetActor->GetActorLocation();
     FVector CameraLocation;
@@ -90,8 +129,109 @@ void ABskCameraPawn::Tick(float DeltaSeconds)
     {
         CameraLocation = TargetActor->GetActorTransform().TransformPosition(FollowOffsetCentimeters);
     }
-    SetActorLocation(CameraLocation);
-    if (Controller) Controller->SetControlRotation((TargetLocation - CameraLocation).Rotation());
+    const FRotator Rotation = (TargetLocation - CameraLocation).Rotation();
+    SetActorLocationAndRotation(CameraLocation, Rotation);
+    if (Controller) Controller->SetControlRotation(Rotation);
+}
+
+void ABskCameraPawn::RegisterRemoteCameraInput()
+{
+    if (!IPixelStreaming2Module::IsAvailable()) return;
+    IPixelStreaming2Module& Module = IPixelStreaming2Module::Get();
+    if (!Module.IsReady()) return;
+    const TSharedPtr<IPixelStreaming2Streamer> Streamer = Module.FindStreamer(Module.GetDefaultStreamerID());
+    const TSharedPtr<IPixelStreaming2InputHandler> Handler = Streamer ? Streamer->GetInputHandler().Pin() : nullptr;
+    if (!Handler || RemoteInputHandler.Pin() == Handler) return;
+    const TWeakObjectPtr<ABskCameraPawn> WeakPawn(this);
+    Handler->SetCommandHandler(TEXT("BskCameraInput"),
+        [WeakPawn](FString, FString, FString Payload)
+        {
+            if (Payload.Len() > 2048) return;
+            // Pixel Streaming dispatch/thread details are not a camera contract.
+            // Always mutate actors on the game thread, retaining only a weak pawn.
+            const auto Apply = [WeakPawn, Payload]()
+            {
+                if (ABskCameraPawn* Pawn = WeakPawn.Get()) Pawn->ApplyRemoteCameraInput(Payload);
+            };
+            if (IsInGameThread()) Apply();
+            else AsyncTask(ENamedThreads::GameThread, Apply);
+        });
+    // Read-only runtime probe, deliberately opt-in. Compare accepted input,
+    // quaternion state and the actual rendered POV across the WebRTC boundary.
+    if (FParse::Param(FCommandLine::Get(), TEXT("BskCameraDiagnostics")))
+    {
+        const TWeakPtr<IPixelStreaming2Streamer> WeakStreamer(Streamer);
+        Handler->SetCommandHandler(TEXT("BskCameraProbe"),
+            [WeakPawn, WeakStreamer](FString SourceId, FString, FString)
+            {
+                const auto Reply = [WeakPawn, WeakStreamer, SourceId]()
+                {
+                    const ABskCameraPawn* Pawn = WeakPawn.Get();
+                    const TSharedPtr<IPixelStreaming2Streamer> TargetStreamer = WeakStreamer.Pin();
+                    if (Pawn && TargetStreamer)
+                        TargetStreamer->SendPlayerMessage(SourceId, TEXT("Response"), Pawn->GetCameraDiagnostics());
+                };
+                if (IsInGameThread()) Reply();
+                else AsyncTask(ENamedThreads::GameThread, Reply);
+            });
+    }
+    RemoteInputHandler = Handler;
+    UE_LOG(LogTemp, Display, TEXT("BSK explicit free-camera input registered on streamer %s"), *Streamer->GetId());
+}
+
+FString ABskCameraPawn::GetCameraDiagnostics() const
+{
+    const TSharedRef<FJsonObject> Data = MakeShared<FJsonObject>();
+    Data->SetStringField(TEXT("type"), TEXT("BskCameraDiagnostics"));
+    Data->SetBoolField(TEXT("free"), bFreeCameraActive);
+    Data->SetBoolField(TEXT("remote"), bRemoteCameraControl);
+    Data->SetNumberField(TEXT("packets"), static_cast<double>(RemoteCameraPacketCount));
+    Data->SetNumberField(TEXT("look_dx"), TotalRemoteLook.X);
+    Data->SetNumberField(TEXT("look_dy"), TotalRemoteLook.Y);
+    Data->SetNumberField(TEXT("input_age"), FPlatformTime::Seconds() - LastRemoteCameraInputSeconds);
+    const auto AddQuat = [&Data](const TCHAR* Name, const FQuat& Q)
+    {
+        Data->SetArrayField(Name, { MakeShared<FJsonValueNumber>(Q.X), MakeShared<FJsonValueNumber>(Q.Y),
+            MakeShared<FJsonValueNumber>(Q.Z), MakeShared<FJsonValueNumber>(Q.W) });
+    };
+    AddQuat(TEXT("orientation"), FreeCameraOrientation);
+    AddQuat(TEXT("actor"), GetActorQuat());
+    AddQuat(TEXT("camera"), Camera->GetComponentQuat());
+    Data->SetStringField(TEXT("location"), GetActorLocation().ToString());
+    if (const APlayerController* Player = Cast<APlayerController>(Controller))
+    {
+        AddQuat(TEXT("control"), Player->GetControlRotation().Quaternion());
+        if (Player->PlayerCameraManager)
+        {
+            AddQuat(TEXT("pov"), Player->PlayerCameraManager->GetCameraRotation().Quaternion());
+            Data->SetStringField(TEXT("view_target"), GetNameSafe(Player->GetViewTarget()));
+        }
+    }
+    FString Result;
+    FJsonSerializer::Serialize(Data, TJsonWriterFactory<>::Create(&Result));
+    return Result;
+}
+
+bool ABskCameraPawn::ApplyRemoteCameraInput(const FString& Descriptor)
+{
+    FBskCameraInput Input;
+    if (!FBskCameraInput::Parse(Descriptor, Input)) return false;
+    ++RemoteCameraPacketCount;
+    if (Input.bActive) TotalRemoteLook += Input.Look;
+    if (!Input.bActive)
+    {
+        if (bFreeCameraActive || bRemoteCameraControl) ReturnToMainView();
+        return true;
+    }
+    if (!bFreeCameraActive) ToggleFreeCamera();
+    bRemoteCameraControl = true;
+    RemoteCameraInput = Input;
+    LastRemoteCameraInputSeconds = FPlatformTime::Seconds();
+    // A displacement is applied exactly once, without DeltaSeconds, FOV,
+    // encoder dimensions, legacy controller scales or mouse smoothing.
+    ApplyFreeLook(Input.Look);
+    RemoteCameraInput.Look = FVector2D::ZeroVector;
+    return true;
 }
 
 void ABskCameraPawn::SetMainViewTransform(const FVector& Location, const FRotator& Rotation)
@@ -144,15 +284,31 @@ void ABskCameraPawn::ToggleFreeCamera()
         return;
     }
 
+    // Latch the current view once. Never read Euler ControlRotation back into
+    // the free-flight attitude: PlayerCameraManager clamps pitch/roll there.
+    FreeCameraOrientation = GetViewRotation().Quaternion().GetNormalized();
     bFreeCameraActive = true;
     TargetActor = nullptr;
     CameraMode = EBskCameraMode::Free;
+    bUseControllerRotationPitch = false;
+    bUseControllerRotationYaw = false;
+    bUseControllerRotationRoll = false;
+    Camera->bUsePawnControlRotation = false;
+    Camera->SetRelativeRotation(FQuat::Identity);
+    SetActorRotation(FreeCameraOrientation);
     UE_LOG(LogTemp, Display, TEXT("BSK camera entered free-flight mode (C toggles, Home restores main view)"));
 }
 
 void ABskCameraPawn::ReturnToMainView()
 {
+    bRemoteCameraControl = false;
+    RemoteCameraInput = FBskCameraInput();
     bFreeCameraActive = false;
+    bUseControllerRotationPitch = true;
+    bUseControllerRotationYaw = true;
+    bUseControllerRotationRoll = false;
+    Camera->bUsePawnControlRotation = true;
+    Camera->SetRelativeRotation(FQuat::Identity);
     TargetActor = MainTargetActor;
     CameraMode = MainCameraMode;
     OrbitDistanceCentimeters = MainOrbitDistanceCentimeters;
@@ -172,8 +328,12 @@ void ABskCameraPawn::ReturnToMainView()
     if (GetMovementComponent()) GetMovementComponent()->StopMovementImmediately();
     if (CameraMode == EBskCameraMode::MainView)
     {
-        SetActorLocation(MainViewLocation);
+        SetActorLocationAndRotation(MainViewLocation, MainViewRotation);
         if (Controller) Controller->SetControlRotation(MainViewRotation);
+    }
+    else
+    {
+        UpdateTrackingCamera();
     }
     UE_LOG(LogTemp, Display, TEXT("BSK camera restored main view"));
 }
@@ -234,14 +394,18 @@ void ABskCameraPawn::MoveDownPressed() { bMoveDown = true; }
 void ABskCameraPawn::MoveDownReleased() { bMoveDown = false; }
 void ABskCameraPawn::Turn(float Value)
 {
+    if (bRemoteCameraControl) return;
     if (CameraMode == EBskCameraMode::MainView) return;
-    if (CameraMode == EBskCameraMode::Orbit) OrbitYawDegrees += Value;
+    if (CameraMode == EBskCameraMode::Free) ApplyFreeLook(FVector2D(Value / FBskCameraInput::DegreesPerMouseUnit, 0.0));
+    else if (CameraMode == EBskCameraMode::Orbit) OrbitYawDegrees += Value;
     else AddControllerYawInput(Value);
 }
 void ABskCameraPawn::LookUp(float Value)
 {
+    if (bRemoteCameraControl) return;
     if (CameraMode == EBskCameraMode::MainView) return;
-    if (CameraMode == EBskCameraMode::Orbit) OrbitPitchDegrees = FMath::Clamp(OrbitPitchDegrees + Value, -89.0, 89.0);
+    if (CameraMode == EBskCameraMode::Free) ApplyFreeLook(FVector2D(0.0, -Value / FBskCameraInput::DegreesPerMouseUnit));
+    else if (CameraMode == EBskCameraMode::Orbit) OrbitPitchDegrees = FMath::Clamp(OrbitPitchDegrees + Value, -89.0, 89.0);
     else AddControllerPitchInput(Value);
 }
 
