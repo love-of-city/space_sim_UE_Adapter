@@ -28,9 +28,24 @@ void UBskRenderWorldSubsystem::Deinitialize()
     Super::Deinitialize();
 }
 
+void UBskRenderWorldSubsystem::ResetFrameState()
+{
+    check(IsInGameThread());
+    bHasReceivedFrame = false;
+    bHasAppliedFrame = false;
+    LatestReceivedFrame = FBskRenderFrame{};
+    LatestAppliedFrame = FBskRenderFrame{};
+    SimulationTimeNanoseconds = 0;
+    SimulationTimeChanged.Broadcast(0);
+}
+
 void UBskRenderWorldSubsystem::AcceptManifest(const FBskSceneManifest& Manifest)
 {
     check(IsInGameThread());
+    if (SessionId != Manifest.SessionId)
+    {
+        ResetFrameState();
+    }
     SessionId = Manifest.SessionId;
     ManifestRevision = Manifest.Revision;
     LatestManifest = Manifest;
@@ -68,6 +83,7 @@ void UBskRenderWorldSubsystem::NotifyManifestApplied(const FBskSceneManifest& Ma
 void UBskRenderWorldSubsystem::NotifyEventApplied(const FBskRenderEvent& Event)
 {
     check(IsInGameThread());
+    if (Event.EventKind == TEXT("scene_reset")) ResetFrameState();
     for (const FRenderExtensionEntry& Entry : RenderExtensions) if (Entry.Extension) Entry.Extension->OnEventApplied(Event);
     EventApplied.Broadcast(Event);
 }

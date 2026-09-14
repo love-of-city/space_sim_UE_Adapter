@@ -116,6 +116,7 @@ protected:
 private:
     friend class FBskBuiltinCaptureProvider;
     friend class FBskLocalFrameExtrapolationTest;
+    friend class FBskSceneResetTest;
     friend class FBskSceneSunlightIntensityTest;
     struct FObjectSpec
     {
@@ -131,6 +132,7 @@ private:
     bool LoadConfiguration();
     void ApplyManifest(const FBskSceneManifest& Manifest);
     void ApplyEvent(const FBskRenderEvent& Event);
+    void ResetPresentationState();
     void ApplyFrame(const FBskRenderFrame& Frame, bool bPresentationFrame = true);
     FBskRenderFrame InterpolateFrame(const FBskRenderFrame& From, const FBskRenderFrame& To, double Alpha) const;
     FBskRenderFrame ExtrapolateFrame(const FBskRenderFrame& From, const FBskRenderFrame& To, double SecondsBeyondTarget) const;

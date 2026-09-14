@@ -101,7 +101,7 @@ void FBskTcpReceiver::SetStatus(const FString& NewStatus)
 bool FBskTcpReceiver::ConsumeLatest(FBskRenderFrame& OutFrame)
 {
     FScopeLock Lock(&LatestMutex);
-    if (!LatestFrame.IsValid())
+    if (LatestManifest.IsValid() || !LatestFrame.IsValid())
     {
         return false;
     }
@@ -122,7 +122,7 @@ bool FBskTcpReceiver::ConsumeLatestManifest(FBskSceneManifest& OutManifest)
 bool FBskTcpReceiver::ConsumeEvent(FBskRenderEvent& OutEvent)
 {
     FScopeLock Lock(&LatestMutex);
-    if (Events.IsEmpty()) return false;
+    if (LatestManifest.IsValid() || Events.IsEmpty()) return false;
     OutEvent = MoveTemp(Events[0]);
     Events.RemoveAt(0, 1, EAllowShrinking::No);
     return true;
@@ -131,6 +131,7 @@ bool FBskTcpReceiver::ConsumeEvent(FBskRenderEvent& OutEvent)
 void FBskTcpReceiver::PublishLatest(FBskRenderFrame&& Frame)
 {
     FScopeLock Lock(&LatestMutex);
+    if (!IncomingSessionId.IsEmpty() && !Frame.SessionId.IsEmpty() && Frame.SessionId != IncomingSessionId) return;
     if (LatestFrame.IsValid())
     {
         ++OverwrittenFrameCount;
@@ -142,12 +143,20 @@ void FBskTcpReceiver::PublishLatest(FBskRenderFrame&& Frame)
 void FBskTcpReceiver::PublishManifest(FBskSceneManifest&& Manifest)
 {
     FScopeLock Lock(&LatestMutex);
+    if (IncomingSessionId != Manifest.SessionId)
+    {
+        LatestFrame.Reset();
+        Events.Reset();
+        IncomingSessionId = Manifest.SessionId;
+    }
     LatestManifest = MakeShared<FBskSceneManifest, ESPMode::ThreadSafe>(MoveTemp(Manifest));
 }
 
 void FBskTcpReceiver::PublishEvent(FBskRenderEvent&& Event)
 {
     FScopeLock Lock(&LatestMutex);
+    if (!IncomingSessionId.IsEmpty() && Event.SessionId != IncomingSessionId) return;
+    if (Event.EventKind == TEXT("scene_reset")) LatestFrame.Reset();
     constexpr int32 MaxPendingEvents = 64;
     if (Events.Num() >= MaxPendingEvents) Events.RemoveAt(0, 1, EAllowShrinking::No);
     Events.Add(MoveTemp(Event));

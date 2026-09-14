@@ -31,6 +31,7 @@ public:
     virtual void Stop() override;
 
 private:
+    friend class FBskReceiverResetTest;
     bool CreateListener();
     void CloseClient();
     void CloseSockets();
@@ -53,6 +54,7 @@ private:
     TSharedPtr<FBskRenderFrame, ESPMode::ThreadSafe> LatestFrame;
     TSharedPtr<FBskSceneManifest, ESPMode::ThreadSafe> LatestManifest;
     TArray<FBskRenderEvent> Events;
+    FString IncomingSessionId;
     mutable FCriticalSection OutboundMutex;
     TArray<TArray<uint8>> OutboundPackets;
     mutable FCriticalSection StatusMutex;
