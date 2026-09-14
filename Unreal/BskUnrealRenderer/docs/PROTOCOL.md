@@ -389,3 +389,30 @@ samples retain their fixed gain; cumulative camera angles remain unbounded.
 `window.__freeCameraDiagnostics()` on the operator page reports bounded, read-only
 mouse diagnostics. This frontend correction leaves the UE command schema and
 quaternion rotation unchanged; no running simulation restart is required.
+
+
+## Live scene reset (server-authoritative)
+
+A physics reset must use a **new render `session_id`**. The simulation server
+creates a fresh `BasiliskRenderBridge` bound to the rebuilt BSK/MJScene objects,
+publishes its retained hello/manifest, then emits `scene_reset` and new frames
+starting at simulation time zero. Calling the old bridge's `Reset()` alone does
+not replace its native state bindings or UUID and is not a physics reset.
+
+The UE process and Pixel Streaming connections remain running. A changed
+manifest session clears pending frames/events from the previous session and
+resets presentation interpolation/extrapolation, received/applied frame caches,
+simulation-clock capture deadlines and scene-capture temporal history. Events
+and frames wait until their pending manifest has been consumed on the game
+thread. The first new frame is applied directly; old-session frames/events are
+rejected rather than blended into the new state.
+
+The existing `scene_reset` event also clears presentation/capture history; it
+never changes authoritative physics or independently moves the simulation's
+bodies. The backend control protocol, not this renderer event, owns the request
+and completion acknowledgement. Capture packets retain `session_id` so the
+backend can reject late images from the previous run even when frame IDs and
+simulation timestamps are reused.
+
+Regression coverage: `BskUnreal.Presentation.SceneReset` and
+`BskUnreal.Protocol.ResetReceiveBarrier` (Unreal automation, supports NullRHI).

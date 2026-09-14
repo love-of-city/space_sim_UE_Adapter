@@ -6,6 +6,7 @@
 #include "BskRenderExtension.h"
 #include "BskRenderWorldSubsystem.h"
 #include "BskSceneController.h"
+#include "BskTcpReceiver.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/DirectionalLight.h"
 #include "Components/LightComponent.h"
@@ -618,6 +619,113 @@ bool FBskLocalFrameExtrapolationTest::RunTest(const FString& Parameters)
         Controller->ExtrapolateFrame(To, To, 0.02).Objects[1].PositionMeters.Equals(To.Objects[1].PositionMeters));
     TestTrue(TEXT("negative prediction duration holds the target"),
         Controller->ExtrapolateFrame(From, To, -1.0).Objects[1].PositionMeters.Equals(To.Objects[1].PositionMeters));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskSceneResetTest,
+    "BskUnreal.Presentation.SceneReset",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskSceneResetTest::RunTest(const FString& Parameters)
+{
+    ABskSceneController* Controller = NewObject<ABskSceneController>();
+    Controller->ActiveSessionId = TEXT("new-session");
+    Controller->LastFrameId = 100;
+    Controller->bHasTargetFrame = true;
+    Controller->bHasPresentationFrame = true;
+    Controller->PreviousFrame.FrameId = 99;
+    Controller->TargetFrame.FrameId = 100;
+    Controller->BlendElapsedSeconds = 2.0;
+    Controller->LastFrameArrivalSeconds = 50.0;
+    Controller->CameraNextDataCaptureSimulationNanoseconds.Add(TEXT("wrist"), 9000000000);
+    FBskRenderEvent Event;
+    Event.SessionId = TEXT("old-session");
+    Event.EventKind = TEXT("scene_reset");
+    Controller->ApplyEvent(Event);
+    TestEqual(TEXT("late old event ignored"), Controller->LastFrameId, int64(100));
+    Event.SessionId = TEXT("new-session");
+    Controller->ApplyEvent(Event);
+    TestEqual(TEXT("frame id cleared"), Controller->LastFrameId, int64(-1));
+    TestFalse(TEXT("no interpolation across reset"), Controller->bHasTargetFrame);
+    TestFalse(TEXT("no old presentation during capture"), Controller->bHasPresentationFrame);
+    TestEqual(TEXT("arrival clock cleared"), Controller->LastFrameArrivalSeconds, 0.0);
+    TestEqual(TEXT("capture deadlines cleared"), Controller->CameraNextDataCaptureSimulationNanoseconds.Num(), 0);
+
+    UBskRenderWorldSubsystem* Subsystem = NewObject<UBskRenderWorldSubsystem>();
+    FBskSceneManifest Manifest;
+    Manifest.SessionId = TEXT("old-session");
+    Manifest.Revision = 1;
+    Subsystem->AcceptManifest(Manifest);
+    FBskRenderFrame Frame;
+    Frame.SessionId = Manifest.SessionId;
+    Frame.ManifestRevision = 1;
+    Frame.FrameId = 100;
+    Frame.SimulationTimeNanoseconds = 9000000000;
+    FString Reason;
+    TestTrue(TEXT("old frame accepted before reset"), Subsystem->AcceptFrame(Frame, Reason));
+    Subsystem->NotifyFrameApplied(Frame);
+    Manifest.SessionId = TEXT("new-session");
+    Subsystem->AcceptManifest(Manifest);
+    TestEqual(TEXT("subsystem time cleared"), Subsystem->GetSimulationTimeNanoseconds(), int64(0));
+    TestEqual(TEXT("received cache cleared"), Subsystem->GetLatestReceivedFrameId(), int64(-1));
+    TestEqual(TEXT("applied cache cleared"), Subsystem->GetLatestAppliedFrameId(), int64(-1));
+    TestFalse(TEXT("old session frame rejected"), Subsystem->AcceptFrame(Frame, Reason));
+    Frame.SessionId = Manifest.SessionId;
+    Frame.FrameId = 0;
+    Frame.SimulationTimeNanoseconds = 0;
+    TestTrue(TEXT("new frame zero accepted"), Subsystem->AcceptFrame(Frame, Reason));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskReceiverResetTest,
+    "BskUnreal.Protocol.ResetReceiveBarrier",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskReceiverResetTest::RunTest(const FString& Parameters)
+{
+    FBskTcpReceiver Receiver(TEXT("127.0.0.1"), 0, 1024 * 1024);
+    FBskSceneManifest OldManifest;
+    OldManifest.SessionId = TEXT("old");
+    Receiver.PublishManifest(MoveTemp(OldManifest));
+    FBskSceneManifest Manifest;
+    Receiver.ConsumeLatestManifest(Manifest);
+    FBskRenderFrame OldFrame;
+    OldFrame.SessionId = TEXT("old");
+    OldFrame.FrameId = 100;
+    Receiver.PublishLatest(MoveTemp(OldFrame));
+    FBskRenderEvent OldEvent;
+    OldEvent.SessionId = TEXT("old");
+    OldEvent.EventKind = TEXT("old-event");
+    Receiver.PublishEvent(MoveTemp(OldEvent));
+
+    FBskSceneManifest NewManifest;
+    NewManifest.SessionId = TEXT("new");
+    Receiver.PublishManifest(MoveTemp(NewManifest));
+    FBskRenderEvent Reset;
+    Reset.SessionId = TEXT("new");
+    Reset.EventKind = TEXT("scene_reset");
+    Receiver.PublishEvent(MoveTemp(Reset));
+    FBskRenderFrame NewFrame;
+    NewFrame.SessionId = TEXT("new");
+    NewFrame.FrameId = 0;
+    Receiver.PublishLatest(MoveTemp(NewFrame));
+    FBskRenderFrame Frame;
+    FBskRenderEvent Event;
+    TestFalse(TEXT("frame waits for pending manifest"), Receiver.ConsumeLatest(Frame));
+    TestFalse(TEXT("event waits for pending manifest"), Receiver.ConsumeEvent(Event));
+    TestTrue(TEXT("new manifest available"), Receiver.ConsumeLatestManifest(Manifest));
+    TestEqual(TEXT("new manifest session"), Manifest.SessionId, FString(TEXT("new")));
+    TestTrue(TEXT("only new reset event survives"), Receiver.ConsumeEvent(Event));
+    TestEqual(TEXT("new reset event session"), Event.SessionId, FString(TEXT("new")));
+    TestFalse(TEXT("no old events remain"), Receiver.ConsumeEvent(Event));
+    TestTrue(TEXT("new frame available"), Receiver.ConsumeLatest(Frame));
+    TestEqual(TEXT("frame zero is retained"), Frame.FrameId, int64(0));
+    FBskRenderFrame Late;
+    Late.SessionId = TEXT("old");
+    Receiver.PublishLatest(MoveTemp(Late));
+    TestFalse(TEXT("late old frame dropped"), Receiver.ConsumeLatest(Frame));
     return true;
 }
 

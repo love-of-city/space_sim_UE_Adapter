@@ -80,6 +80,8 @@ private:
         TSharedPtr<IBskCaptureProvider> Provider;
     };
 
+    void ResetFrameState();
+
     FString SessionId;
     int64 ManifestRevision = 0;
     int64 SimulationTimeNanoseconds = 0;

@@ -1453,6 +1453,7 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
         MissionEventHistory.Reset();
         bAutoCommandSent = false;
     }
+    if (ActiveSessionId != Manifest.SessionId) ResetPresentationState();
     ActiveSessionId = Manifest.SessionId;
     ActiveManifestRevision = Manifest.Revision;
     bShowOrbitLines = Manifest.bOrbitLines;
@@ -1642,9 +1643,40 @@ void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
         Manifest.Visuals.Num(), Manifest.CelestialBodies.Num(), Manifest.Cameras.Num());
 }
 
+void ABskSceneController::ResetPresentationState()
+{
+    check(IsInGameThread());
+    LastFrameId = -1;
+    bHasTargetFrame = false;
+    bHasPresentationFrame = false;
+    PreviousFrame = FBskRenderFrame{};
+    TargetFrame = FBskRenderFrame{};
+    PresentationFrame = FBskRenderFrame{};
+    LastFrameArrivalSeconds = 0.0;
+    BlendElapsedSeconds = 0.0;
+    BlendDurationSeconds = 1.0 / 30.0;
+    // Simulation time goes back to zero: old deadlines would stall capture
+    // until the new session caught up with the previous one.
+    CameraNextDataCaptureSimulationNanoseconds.Reset();
+    CameraNextCaptureSeconds.Reset();
+    PixelStreamingCameraNextCaptureSeconds.Reset();
+    auto CutCaptures = [](auto& Captures)
+    {
+        for (auto& Pair : Captures)
+        {
+            if (Pair.Value) Pair.Value->bCameraCutThisFrame = true;
+        }
+    };
+    CutCaptures(CameraCaptureComponents);
+    CutCaptures(CameraDepthCaptureComponents);
+    CutCaptures(CameraSegmentationCaptureComponents);
+    CutCaptures(PixelStreamingCameraCaptures);
+}
+
 void ABskSceneController::ApplyEvent(const FBskRenderEvent& Event)
 {
     check(IsInGameThread());
+    if (!ActiveSessionId.IsEmpty() && Event.SessionId != ActiveSessionId) return;
     FBskMissionEventView View;
     View.Sequence = Event.Sequence;
     View.Kind = Event.EventKind;
@@ -1702,7 +1734,7 @@ void ABskSceneController::ApplyEvent(const FBskRenderEvent& Event)
     }
     if (View.SimulationTimeNanoseconds == 0)
     {
-        if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
+        if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>() : nullptr)
         {
             View.SimulationTimeNanoseconds = RenderSubsystem->GetSimulationTimeNanoseconds();
         }
@@ -1712,10 +1744,9 @@ void ABskSceneController::ApplyEvent(const FBskRenderEvent& Event)
     if (MissionEventHistory.Num() > MaxMissionEvents) MissionEventHistory.RemoveAt(0, MissionEventHistory.Num() - MaxMissionEvents, EAllowShrinking::No);
     if (Event.EventKind == TEXT("scene_reset"))
     {
-        LastFrameId = -1;
-        bHasTargetFrame = false;
+        ResetPresentationState();
     }
-    if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
+    if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld() ? GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>() : nullptr)
     {
         RenderSubsystem->NotifyEventApplied(Event);
     }
