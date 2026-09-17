@@ -8,7 +8,7 @@ param(
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
 $tests = Join-Path $ProjectRoot 'tests'
-$pythonExe = if ($Python) { $Python } elseif ($env:SPACE_SIM_PYTHON) { $env:SPACE_SIM_PYTHON } else { (Get-Command python).Source }
+$pythonExe = Resolve-BskPython -RequestedPython $Python
 & $pythonExe -m unittest discover -s $tests -v
 if ($LASTEXITCODE -ne 0) { throw 'Python contract tests failed.' }
 

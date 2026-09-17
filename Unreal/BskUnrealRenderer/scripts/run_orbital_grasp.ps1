@@ -1,4 +1,5 @@
 param(
+    [string]$Python = '',
     [string]$ModelRoot = '',
     [string]$UnrealRoot = '',
     [ValidateRange(34.0, 120.0)]
@@ -30,6 +31,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
+$pythonExe = Resolve-BskPython -RequestedPython $Python -RequiredModules @('numpy', 'Basilisk.simulation.mujoco')
 $ue = Resolve-UnrealRoot $UnrealRoot
 
 if (!$ModelRoot) {
@@ -100,7 +102,7 @@ if ($replayMode) {
     if (!$ReuseRecording) {
         New-Item -ItemType Directory -Path (Split-Path -Parent $resolvedRecordingPath) -Force | Out-Null
         Write-Output 'Running authoritative BSK/MJScene orbital grasp and writing a renderer recording ...'
-        & conda run --no-capture-output -n mujoco-dev python $scenario --model-root $resolvedModelRoot `
+        & $pythonExe $scenario --model-root $resolvedModelRoot `
             --catalog $catalog --host 127.0.0.1 --port $Port --duration $Duration `
             --simulation-rate $SimulationRate --generated-mjcf $generatedMjcf --metrics $resolvedMetricsPath `
             --recording $resolvedRecordingPath --record-only
@@ -158,7 +160,7 @@ if ($replayMode) {
         if (!$replayStarted) { throw 'UE replay did not apply its first frame within 120 seconds.' }
 
         $durationScript = Join-Path $ProjectRoot 'examples\recording_duration.py'
-        $simulationSpan = & conda run --no-capture-output -n mujoco-dev python $durationScript $resolvedRecordingPath
+        $simulationSpan = & $pythonExe $durationScript $resolvedRecordingPath
         if ($LASTEXITCODE -ne 0) { throw 'Could not determine orbital grasp recording duration.' }
         $wallDuration = [Math]::Ceiling(([double]$simulationSpan / $PlaybackRate) + 3.0)
         Write-Output "Playing orbital grasp recording for approximately $wallDuration wall-clock seconds ..."
@@ -196,7 +198,7 @@ try {
     Start-Sleep -Milliseconds 500
 
     Write-Output "Running the 500 km Earth-orbit closed-loop rendezvous, hold, and grasp at ${SimulationRate}x ..."
-    & conda run --no-capture-output -n mujoco-dev python $scenario --model-root $resolvedModelRoot `
+    & $pythonExe $scenario --model-root $resolvedModelRoot `
         --catalog $catalog --host 127.0.0.1 --port $Port --duration $Duration `
         --simulation-rate $SimulationRate --generated-mjcf $generatedMjcf --metrics $resolvedMetricsPath
     if ($LASTEXITCODE -ne 0) { throw "Orbital grasp sender failed with exit code $LASTEXITCODE." }

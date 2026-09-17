@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24"]
 
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
 [tool.setuptools]
 packages = ["bsk_render_adapter", "bsk_unreal_adapter"]
 package-dir = {bsk_render_adapter = "Adapters/bsk_render_adapter", bsk_unreal_adapter = "Unreal/BskUnrealRenderer/python/bsk_unreal_adapter"}
