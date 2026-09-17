@@ -1,4 +1,5 @@
 #include "BskSceneController.h"
+#include "BskPreviewCadence.h"
 #include "BskCelestialLighting.h"
 
 #include "BskTcpReceiver.h"
@@ -36,6 +37,8 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/Runnable.h"
@@ -583,12 +586,15 @@ void ABskSceneController::EndPlay(const EEndPlayReason::Type EndPlayReason)
         Receiver->StopSource();
         Receiver.Reset();
     }
+    if (bManagesViewportRendering && GEngine && GEngine->GameViewport)
+        GEngine->GameViewport->bDisableWorldRendering = bPreviousDisableWorldRendering;
     Super::EndPlay(EndPlayReason);
 }
 
 void ABskSceneController::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    const double TickStart = bVideoDiagnostics ? FPlatformTime::Seconds() : 0.0;
     check(IsInGameThread());
     if (Receiver)
     {
@@ -648,8 +654,29 @@ void ABskSceneController::Tick(float DeltaSeconds)
         }
     }
     UpdateDecorativeSunPlacement();
+    UpdatePreviewViewportRendering();
     UpdatePictureInPictureCaptures();
     UpdatePixelStreamingCameraCaptures();
+    if (bVideoDiagnostics)
+    {
+        const double Now = FPlatformTime::Seconds();
+        if (VideoDiagnosticsStart <= 0.0) VideoDiagnosticsStart = TickStart;
+        VideoDiagnosticsTickWork += Now - TickStart;
+        ++VideoDiagnosticsTicks;
+        const double Window = Now - VideoDiagnosticsStart;
+        if (Window >= 5.0)
+        {
+            UE_LOG(LogBskUnreal, Display, TEXT("VideoDiagnostics tick_fps=%.1f scene_tick_ms=%.2f"),
+                VideoDiagnosticsTicks / Window, 1000.0 * VideoDiagnosticsTickWork / VideoDiagnosticsTicks);
+            for (const auto& Pair : VideoDiagnosticsCaptures)
+                UE_LOG(LogBskUnreal, Display, TEXT("VideoDiagnostics camera=%s capture_fps=%.1f viewed=%d"),
+                    *Pair.Key, Pair.Value / Window, HasPixelStreamingCameraViewers(Pair.Key) ? 1 : 0);
+            VideoDiagnosticsStart = Now;
+            VideoDiagnosticsTickWork = 0.0;
+            VideoDiagnosticsTicks = 0;
+            VideoDiagnosticsCaptures.Reset();
+        }
+    }
     if (GetWorld() && !PendingCommandIds.IsEmpty())
     {
         const double Now = GetWorld()->GetRealTimeSeconds();
@@ -1081,12 +1108,13 @@ void ABskSceneController::ConfigurePixelStreamingOutput()
 {
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingURL="), PixelStreamingConnectionUrl);
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingBaseId="), PixelStreamingBaseId);
+    bVideoDiagnostics = FParse::Param(FCommandLine::Get(), TEXT("BskVideoDiagnostics"));
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameraWidth="), PixelStreamingCameraWidth);
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameraHeight="), PixelStreamingCameraHeight);
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameraFps="), PixelStreamingCameraRateHertz);
     PixelStreamingCameraWidth = FMath::Clamp(PixelStreamingCameraWidth, 160, 1920);
     PixelStreamingCameraHeight = FMath::Clamp(PixelStreamingCameraHeight, 90, 1080);
-    PixelStreamingCameraRateHertz = FMath::Clamp(PixelStreamingCameraRateHertz, 1.0, 60.0);
+    PixelStreamingCameraRateHertz = FMath::Clamp(PixelStreamingCameraRateHertz, 1.0, 120.0);
 
     FString Cameras;
     if (FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameras="), Cameras))
@@ -1199,6 +1227,8 @@ void ABskSceneController::ConfigurePixelStreamingCamera(AActor* Actor, const FBs
             UE_LOG(LogBskUnreal, Error, TEXT("Could not create RenderTarget producer for %s"), *StreamerId);
             return;
         }
+        Streamer->SetStreamFPS(FMath::RoundToInt(PixelStreamingCameraRateHertz));
+        Streamer->SetCoupleFramerate(true);
         Streamer->SetConnectionURL(PixelStreamingConnectionUrl);
         Streamer->SetVideoProducer(Producer);
         Streamer->StartStreaming();
@@ -1230,11 +1260,45 @@ void ABskSceneController::ConfigurePixelStreamingCamera(AActor* Actor, const FBs
     }
 }
 
+bool ABskSceneController::HasPixelStreamingCameraViewers(const FString& CameraId) const
+{
+    const TSharedPtr<IPixelStreaming2Streamer> Streamer = PixelStreamingCameraStreamers.FindRef(CameraId);
+    if (!Streamer) return false;
+    for (const FString& PlayerId : Streamer->GetConnectedPlayers())
+        if (PlayerId != Streamer->GetId()) return true;
+    return false;
+}
+
+bool ABskSceneController::HasPixelStreamingViewportViewers() const
+{
+    // A visible local viewport is itself a viewer, even without browser peers.
+    if (!FParse::Param(FCommandLine::Get(), TEXT("RenderOffscreen"))) return true;
+    const TSharedPtr<IPixelStreaming2Streamer> Streamer = IPixelStreaming2Module::Get().FindStreamer(PixelStreamingBaseId);
+    if (!Streamer) return false;
+    for (const FString& PlayerId : Streamer->GetConnectedPlayers())
+        if (PlayerId != Streamer->GetId()) return true;
+    return false;
+}
+
+void ABskSceneController::UpdatePreviewViewportRendering()
+{
+    // In server/offscreen mode a camera subscriber does not need a second full
+    // 3D view rendered into an unwatched main viewport. SceneCapture continues
+    // independently. Never suppress a local editor/windowed user's viewport.
+    if (PixelStreamingConnectionUrl.IsEmpty() || !FParse::Param(FCommandLine::Get(), TEXT("RenderOffscreen"))
+        || !GEngine || !GEngine->GameViewport) return;
+    if (!bManagesViewportRendering)
+    {
+        bPreviousDisableWorldRendering = GEngine->GameViewport->bDisableWorldRendering;
+        bManagesViewportRendering = true;
+    }
+    GEngine->GameViewport->bDisableWorldRendering = bPreviousDisableWorldRendering || !HasPixelStreamingViewportViewers();
+}
+
 void ABskSceneController::UpdatePixelStreamingCameraCaptures()
 {
     if (!GetWorld() || PixelStreamingCameraCaptures.IsEmpty()) return;
-    const double Now = GetWorld()->GetRealTimeSeconds();
-    const double Period = 1.0 / PixelStreamingCameraRateHertz;
+    const double Now = FPlatformTime::Seconds();
     for (const TPair<FString, TObjectPtr<USceneCaptureComponent2D>>& Pair : PixelStreamingCameraCaptures)
     {
         if (!Pair.Value || !Pair.Value->TextureTarget) continue;
@@ -1243,10 +1307,11 @@ void ABskSceneController::UpdatePixelStreamingCameraCaptures()
             && CameraPictureInPictureVisibility.FindRef(Pair.Key);
         // A visible HUD PIP was already captured earlier in this game tick and
         // feeds this same RenderTarget. Capture here only for hidden/non-PIP streams.
-        if (bVisibleInHud) continue;
-        if (Now + UE_DOUBLE_SMALL_NUMBER < PixelStreamingCameraNextCaptureSeconds.FindRef(Pair.Key)) continue;
+        if (bVisibleInHud || !HasPixelStreamingCameraViewers(Pair.Key)) continue;
+        double& NextSeconds = PixelStreamingCameraNextCaptureSeconds.FindOrAdd(Pair.Key);
+        if (!BskPreviewCaptureDue(Now, PixelStreamingCameraRateHertz, NextSeconds)) continue;
         Pair.Value->CaptureScene();
-        PixelStreamingCameraNextCaptureSeconds.Add(Pair.Key, Now + Period);
+        if (bVideoDiagnostics) ++VideoDiagnosticsCaptures.FindOrAdd(Pair.Key);
     }
 }
 
@@ -2234,19 +2299,26 @@ void ABskSceneController::ConfigureCamera(AActor* Actor, const FBskCameraDefinit
 void ABskSceneController::UpdatePictureInPictureCaptures()
 {
     if (!GetWorld()) return;
-    const double NowSeconds = GetWorld()->GetTimeSeconds();
+    const double NowSeconds = FPlatformTime::Seconds();
     for (const TPair<FString, FBskCameraDefinition>& Pair : ManifestCameras)
     {
         const FBskCameraDefinition& Definition = Pair.Value;
         if (!Definition.bPictureInPicture || !CameraPictureInPictureVisibility.FindRef(Pair.Key)) continue;
         USceneCaptureComponent2D* Capture = CameraCaptureComponents.FindRef(Pair.Key);
         if (!Capture || !Capture->TextureTarget) continue;
-        const double NextCaptureSeconds = CameraNextCaptureSeconds.FindRef(Pair.Key);
-        if (NowSeconds + UE_DOUBLE_SMALL_NUMBER < NextCaptureSeconds) continue;
-        Capture->CaptureScene();
         double PreviewRate = PreviewRateOverrideHertz > 0.0 ? PreviewRateOverrideHertz : Definition.CaptureRateHertz;
-        if (IsPixelStreamingCameraRequested(Pair.Key)) PreviewRate = FMath::Max(PreviewRate, PixelStreamingCameraRateHertz);
-        CameraNextCaptureSeconds.Add(Pair.Key, NowSeconds + 1.0 / FMath::Max(1.0, PreviewRate));
+        if (IsPixelStreamingCameraRequested(Pair.Key))
+        {
+            // Prioritize the view actually subscribed by a browser. Keep unselected
+            // HUD thumbnails at <=15 Hz rather than rendering all three views at 90.
+            PreviewRate = BskPreviewRateForViewers(PixelStreamingCameraRateHertz,
+                HasPixelStreamingCameraViewers(Pair.Key), HasPixelStreamingViewportViewers());
+            if (PreviewRate <= 0.0) continue;
+        }
+        double& NextSeconds = CameraNextCaptureSeconds.FindOrAdd(Pair.Key);
+        if (!BskPreviewCaptureDue(NowSeconds, FMath::Max(1.0, PreviewRate), NextSeconds)) continue;
+        Capture->CaptureScene();
+        if (bVideoDiagnostics) ++VideoDiagnosticsCaptures.FindOrAdd(Pair.Key);
         if (PreviewRateOverrideHertz > 0.0 && CaptureNetworkSender && bHasPresentationFrame)
         {
             FBskCaptureRequest Request;

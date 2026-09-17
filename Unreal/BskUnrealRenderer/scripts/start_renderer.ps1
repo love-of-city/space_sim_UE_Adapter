@@ -16,14 +16,16 @@ param(
     [string]$PixelStreamingURL = '',
     [string]$PixelStreamingId = 'BskRenderer',
     [ValidateRange(1, 120)]
-    [int]$PixelStreamingFps = 60,
+    [int]$PixelStreamingFps = 90,
+    [ValidateRange(0, 100)]
+    [int]$EncoderMinQuality = 60,
     [string[]]$PixelStreamingCameraIds = @(),
     [ValidateRange(160, 1920)]
     [int]$PixelStreamingCameraWidth = 640,
     [ValidateRange(90, 1080)]
     [int]$PixelStreamingCameraHeight = 360,
-    [ValidateRange(1, 60)]
-    [int]$PixelStreamingCameraFps = 30,
+    [ValidateRange(1, 120)]
+    [int]$PixelStreamingCameraFps = 90,
     [string]$CaptureNetworkHost = '127.0.0.1',
     [ValidateRange(0, 65535)]
     [int]$CaptureNetworkPort = 0,
@@ -75,10 +77,18 @@ if ($PixelStreamingURL) {
         # ForceRes keeps the requested back-buffer size in off-screen mode.
         '-RenderOffscreen',
         '-ForceRes',
+        # Stay on the native GPU-copy/fence path. UE 5.6 MediaCapture previously
+        # exhausted its output buffer pool during long-running camera streams.
+        '-PixelStreamingUseMediaCapture=false',
+        # Do not inflate FPS by re-sending old frames on a separate timer.
+        '-PixelStreamingDecoupleFramerate=false',
+        ('-ExecCmds="t.MaxFPS ' + $PixelStreamingFps + ',r.VSync 0"'),
         "-PixelStreamingConnectionURL=$PixelStreamingURL",
         "-PixelStreamingID=$PixelStreamingId",
         "-PixelStreamingWebRTCFps=$PixelStreamingFps",
         '-PixelStreamingEncoderCodec=H264',
+        # Limit compression quality loss without overriding WebRTC's adaptive bitrate.
+        "-PixelStreamingEncoderMinQuality=$EncoderMinQuality",
         '-PixelStreamingEncoderLatencyMode=UltraLowLatency',
         '-PixelStreamingWebRTCDisableTransmitAudio=true',
         '-PixelStreamingWebRTCDisableReceiveAudio=true'
@@ -106,7 +116,7 @@ if ($Foreground) {
 }
 $saved = Join-Path $ProjectRoot 'Saved'
 New-Item -ItemType Directory -Path $saved -Force | Out-Null
-$process = Start-Process -FilePath $editor -ArgumentList $arguments -PassThru
+$process = Start-Process -FilePath $editor -ArgumentList $arguments -PassThru -WindowStyle Hidden
 Set-Content -LiteralPath (Join-Path $saved 'BskRenderer.pid') -Value $process.Id -Encoding ascii
 if ($ReplayPath) {
     Write-Output "BSK Unreal Renderer started (PID $($process.Id)), replaying $resolvedReplay at ${ReplayRate}x"

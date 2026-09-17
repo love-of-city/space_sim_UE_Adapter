@@ -160,6 +160,9 @@ private:
     void UpdatePixelStreamingCameraCaptures();
     void ShutdownPixelStreamingCameras();
     bool IsPixelStreamingCameraRequested(const FString& CameraId) const;
+    bool HasPixelStreamingCameraViewers(const FString& CameraId) const;
+    bool HasPixelStreamingViewportViewers() const;
+    void UpdatePreviewViewportRendering();
     FString PixelStreamingIdForCamera(const FString& CameraId) const;
     void UpdateAuthoritativeDataProductCaptures(const FBskRenderFrame& AuthoritativeFrame);
     bool CaptureCameraDataProducts(const FBskCaptureRequest& Request, FString& OutError);
@@ -320,7 +323,14 @@ private:
     bool bPixelStreamingAllManifestCameras = false;
     int32 PixelStreamingCameraWidth = 640;
     int32 PixelStreamingCameraHeight = 360;
-    double PixelStreamingCameraRateHertz = 30.0;
+    double PixelStreamingCameraRateHertz = 90.0;
+    bool bVideoDiagnostics = false;
+    bool bManagesViewportRendering = false;
+    bool bPreviousDisableWorldRendering = false;
+    double VideoDiagnosticsStart = 0.0;
+    double VideoDiagnosticsTickWork = 0.0;
+    int32 VideoDiagnosticsTicks = 0;
+    TMap<FString, int32> VideoDiagnosticsCaptures;
     TArray<FString> CaptureProductOverride;
     int64 CaptureSequence = 0;
     TSharedPtr<IBskCaptureProvider> BuiltinCaptureProvider;
