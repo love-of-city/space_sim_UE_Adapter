@@ -1,4 +1,5 @@
 param(
+    [string]$Python = '',
     [Parameter(Mandatory=$true)]
     [string]$MjcfPath,
     [Parameter(Mandatory=$true)]
@@ -17,6 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
+$pythonExe = Resolve-BskPython -RequestedPython $Python -RequiredModules @('numpy')
 $ue = Resolve-UnrealRoot $UnrealRoot
 $resolvedMjcf = [IO.Path]::GetFullPath($MjcfPath)
 if (!(Test-Path -LiteralPath $resolvedMjcf)) { throw "MJCF file does not exist: $resolvedMjcf" }
@@ -33,7 +35,7 @@ $importSignatureMarker = Join-Path $ProjectRoot "Saved\AssetImport\$safeImportNa
 $meshSettingsMarker = Join-Path $ProjectRoot "Saved\AssetImport\$safeImportName.mesh_settings"
 $meshSettingsSignature = "$NormalMode|stlAngle=$StlSmoothingAngle|build=$BuildScale|component=$ComponentScale|nanite=off|lod0=full|v=3"
 
-& conda run --no-capture-output -n mujoco-dev python (Join-Path $PSScriptRoot 'generate_mjcf_asset_catalog.py') `
+& $pythonExe (Join-Path $PSScriptRoot 'generate_mjcf_asset_catalog.py') `
     --mjcf $resolvedMjcf --destination $Destination --catalog $resolvedCatalog --import-settings $importSettings `
     --mesh-cache $meshCache --normal-mode $NormalMode --stl-smoothing-angle $StlSmoothingAngle `
     --build-scale $BuildScale --component-scale $ComponentScale

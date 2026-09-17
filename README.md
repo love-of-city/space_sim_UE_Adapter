@@ -22,7 +22,7 @@ MJCF 的 ASCII/Binary STL 资产准备说明见 [STL_MESHES.md](Unreal/BskUnreal
 
 - Unreal Engine 5.6.1；本机默认路径为 `E:\UE5.6\UE_5.6`
 - Visual Studio 2022、MSVC 与 Windows SDK
-- Conda 环境 `mujoco-dev`，包含 Basilisk/MJScene 和 NumPy
+- Python 环境（Conda、uv 或 venv 均可），包含 Basilisk/MJScene 和 NumPy
 - Git LFS（用于 `.uasset`、OBJ 和纹理）
 
 UE 引擎、Conda 环境和 Basilisk 上游源码不进入本仓库。Demo 8 会读取同级工作区中的 `basilisk/examples/mujoco/scenarioMJSceneVizard.py`，但不会修改它。
@@ -146,7 +146,7 @@ Set-Location E:\mujoco_demo\space_arm_data_platform
 开发安装：
 
 ```powershell
-conda run -n mujoco-dev python -m pip install -e E:\mujoco_demo\space_sim_UE_adapter
+python -m pip install -e .
 ```
 
 场景代码使用：
@@ -167,3 +167,25 @@ from bsk_render_adapter import BasiliskRenderBridge
 
 当前基线版本为 `0.2.0`。现已具备多相机画中画与数据采集、任务事件面板和
 白名单双向命令；OpNav 结果闭环、异步 GPU 读回和更多 BSK 模块专用适配器仍待完善。
+
+
+## Python 环境选择（Conda / uv / venv 通用）
+
+启动脚本直接调用选中的 Python，不调用环境管理器、不固定环境名称。统一优先级：
+
+1. `-Python` 参数（调用 Python 的入口支持），其次 `SPACE_SIM_PYTHON`；值为解释器文件路径。
+2. 已激活环境：`VIRTUAL_ENV/Scripts/python.exe`，其次 `CONDA_PREFIX/python.exe`。嵌套激活时优先 venv。
+3. 仓库内 `.venv`、`venv`，再查父工作区内 `.venv`、`venv`。
+4. PATH 中的 `python` 可执行文件。
+
+显式配置或已激活环境无效时直接报错；选中解释器缺少入口所需模块时也报错，不会静默切换环境。请在该解释器内安装项目依赖；真实仿真需另行安装包含 MJScene 的 Basilisk。平台把选中的绝对路径通过 `SPACE_SIM_PYTHON` 传给后端、仿真和 Adapter 子进程。UE 资产导入仍使用编辑器内置 Python。
+
+使用 Conda 时先 `conda activate <你的环境名>`；使用 uv/venv 时可激活环境或放在上述本地目录，无需激活也可自动发现。显式覆盖示例：
+
+```powershell
+$env:SPACE_SIM_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+# 然后执行项目启动脚本；取消覆盖后重新自动选择：
+Remove-Item Env:SPACE_SIM_PYTHON
+```
+
+公网入口同样遵循上述顺序。旧 `-CondaRoot` / `SPACE_SIM_CONDA_ROOT` 已移除，请激活目标环境或使用 `-Python` / `SPACE_SIM_PYTHON`。

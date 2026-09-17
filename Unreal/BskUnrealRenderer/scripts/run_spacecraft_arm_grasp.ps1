@@ -1,4 +1,5 @@
 param(
+    [string]$Python = '',
     [string]$ModelRoot = '',
     [string]$UnrealRoot = '',
     [ValidateRange(0.1, 10.0)]
@@ -18,6 +19,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
+$pythonExe = Resolve-BskPython -RequestedPython $Python -RequiredModules @('numpy', 'Basilisk.simulation.mujoco')
 $ue = Resolve-UnrealRoot $UnrealRoot
 
 if (!$ModelRoot) {
@@ -71,7 +73,7 @@ try {
     $scenario = Join-Path $ProjectRoot 'examples\scenario_spacecraft_arm_grasp_unreal.py'
     $catalog = Join-Path $ProjectRoot 'Saved\AssetImport\cubesat_so101.catalog.json'
     Write-Output "Running the native Basilisk PID/contact grasp scenario at ${SimulationRate}x real time ..."
-    & conda run --no-capture-output -n mujoco-dev python $scenario --model-root $resolvedModelRoot `
+    & $pythonExe $scenario --model-root $resolvedModelRoot `
         --catalog $catalog --host 127.0.0.1 --port $Port --duration $Duration --simulation-rate $SimulationRate
     if ($LASTEXITCODE -ne 0) { throw "Native grasp sender failed with exit code $LASTEXITCODE." }
 } finally {

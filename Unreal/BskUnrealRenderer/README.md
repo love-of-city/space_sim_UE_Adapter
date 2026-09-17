@@ -7,7 +7,7 @@ UE 5.6 运行时航天可视化端。Basilisk 和可选 MJScene 始终负责轨�
 
 - Unreal Engine 5.6.1：`E:\UE5.6\UE_5.6`
 - Visual Studio 2022、MSVC 14.38、Windows SDK 10.0.22621
-- Conda 环境：`mujoco-dev`
+- Python 环境可使用 Conda、uv 或 venv；选择顺序为显式配置、已激活环境、仓库/工作区本地环境、PATH，详见[仓库 README](../../README.md#python-环境选择conda--uv--venv-通用)。
 - RTX 4060 Laptop 8 GB / 16 GB RAM 的中低负载默认设置
 
 ## 任务 UI 与双向命令

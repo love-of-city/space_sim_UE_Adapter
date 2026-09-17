@@ -41,3 +41,11 @@ function Set-BskPythonPath {
     if ($env:PYTHONPATH) { $paths += $env:PYTHONPATH }
     $env:PYTHONPATH = $paths -join [IO.Path]::PathSeparator
 }
+
+. (Join-Path $PSScriptRoot 'python_runtime.ps1')
+function Resolve-BskPython {
+    param([string]$RequestedPython = '', [string[]]$RequiredModules = @('numpy'))
+    $selected = Resolve-SpaceSimPython -RepositoryRoot $script:WorkspaceRoot -RequestedPython $RequestedPython -RequiredModules $RequiredModules
+    $env:SPACE_SIM_PYTHON = $selected
+    return $selected
+}

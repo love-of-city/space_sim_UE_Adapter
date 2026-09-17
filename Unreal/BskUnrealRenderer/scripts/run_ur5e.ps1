@@ -1,4 +1,5 @@
 param(
+    [string]$Python = '',
     [string]$UnrealRoot = '',
     [double]$Duration = 22.0,
     [double]$SimulationRate = 1.0,
@@ -18,6 +19,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
+$pythonExe = Resolve-BskPython -RequestedPython $Python -RequiredModules @('numpy', 'Basilisk.simulation.mujoco')
 $ue = Resolve-UnrealRoot $UnrealRoot
 
 & (Join-Path $PSScriptRoot 'prepare_ur5e_assets.ps1') -UnrealRoot $ue -NormalMode $NormalMode -Force:$ReimportAssets
@@ -54,7 +56,7 @@ try {
 
     $scenario = Join-Path $ProjectRoot 'examples\scenario_ur5e_unreal.py'
     Write-Output "Running UR5e sequential fixed-angle motion (${JointAngleDegrees} deg/joint) with authoritative MJScene dynamics at ${SimulationRate}x real time ..."
-    & conda run --no-capture-output -n mujoco-dev python $scenario --workspace $WorkspaceRoot --host 127.0.0.1 --port $Port --duration $Duration --simulation-rate $SimulationRate --joint-angle-deg $JointAngleDegrees --move-seconds $MoveSeconds --hold-seconds $HoldSeconds
+    & $pythonExe $scenario --workspace $WorkspaceRoot --host 127.0.0.1 --port $Port --duration $Duration --simulation-rate $SimulationRate --joint-angle-deg $JointAngleDegrees --move-seconds $MoveSeconds --hold-seconds $HoldSeconds
     if ($LASTEXITCODE -ne 0) { throw "UR5e sender failed with exit code $LASTEXITCODE." }
 } finally {
     if (!$KeepRendererOpen) { & (Join-Path $PSScriptRoot 'stop_renderer.ps1') }

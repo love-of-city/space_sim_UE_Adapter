@@ -1,5 +1,6 @@
 param(
     [string]$UnrealRoot = '',
+    [string]$Python = '',
     [switch]$SkipBuild,
     [switch]$SkipUnreal
 )
@@ -7,7 +8,8 @@ param(
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
 $tests = Join-Path $ProjectRoot 'tests'
-& conda run --no-capture-output -n mujoco-dev python -m unittest discover -s $tests -v
+$pythonExe = Resolve-BskPython -RequestedPython $Python
+& $pythonExe -m unittest discover -s $tests -v
 if ($LASTEXITCODE -ne 0) { throw 'Python contract tests failed.' }
 
 if (!$SkipUnreal) {

@@ -1,4 +1,5 @@
 param(
+    [string]$Python = '',
     [string]$UnrealRoot = '',
     [string]$BasiliskRoot = '',
     [string]$RecordingPath = '',
@@ -14,6 +15,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
+$pythonExe = Resolve-BskPython -RequestedPython $Python -RequiredModules @('numpy', 'Basilisk.simulation.mujoco')
 $ue = Resolve-UnrealRoot $UnrealRoot
 if (!$RecordingPath) {
     $RecordingPath = Join-Path $ProjectRoot 'Saved\Recordings\demo8.bskrec'
@@ -64,7 +66,7 @@ if ($Live) {
         $basiliskSource = Resolve-BasiliskRoot $BasiliskRoot
         $scenario = Join-Path $ProjectRoot 'examples\scenario_mjscene_unreal.py'
         Write-Output "Running authoritative Basilisk + MJScene Demo 8 live at ${LiveRate}x simulation rate ..."
-        & conda run --no-capture-output -n mujoco-dev python $scenario --basilisk-root $basiliskSource --live --host 127.0.0.1 --port $Port --simulation-rate $LiveRate
+        & $pythonExe $scenario --basilisk-root $basiliskSource --live --host 127.0.0.1 --port $Port --simulation-rate $LiveRate
         if ($LASTEXITCODE -ne 0) { throw "Demo 8 live sender failed with exit code $LASTEXITCODE." }
     } finally {
         if (!$KeepRendererOpen) {
@@ -84,7 +86,7 @@ if (!$ReuseRecording -or !(Test-Path -LiteralPath $RecordingPath)) {
     $basiliskSource = Resolve-BasiliskRoot $BasiliskRoot
     $scenario = Join-Path $ProjectRoot 'examples\scenario_mjscene_unreal.py'
     Write-Output 'Running authoritative Basilisk + MJScene Demo 8 and recording renderer states ...'
-    & conda run --no-capture-output -n mujoco-dev python $scenario --basilisk-root $basiliskSource --output $RecordingPath
+    & $pythonExe $scenario --basilisk-root $basiliskSource --output $RecordingPath
     if ($LASTEXITCODE -ne 0) { throw "Demo 8 recording failed with exit code $LASTEXITCODE." }
 }
 
@@ -97,7 +99,7 @@ if ($KeepRendererOpen) {
 
 try {
     $durationScript = Join-Path $ProjectRoot 'examples\recording_duration.py'
-    $simulationSpan = & conda run --no-capture-output -n mujoco-dev python $durationScript $RecordingPath
+    $simulationSpan = & $pythonExe $durationScript $RecordingPath
     if ($LASTEXITCODE -ne 0) { throw 'Could not determine Demo 8 recording duration.' }
     $wallDuration = [Math]::Ceiling(([double]$simulationSpan / $PlaybackRate) + 5.0)
     Write-Output "Playing Demo 8 for approximately $wallDuration wall-clock seconds ..."
