@@ -11,49 +11,27 @@ no equality constraint, weld, or adhesion. Its stored default target pose is
 deliberately contact-free; the scenario sets the calibrated task pose after
 Basilisk initialization.
 
-## Generate and validate
+## Optional model development and simulation
 
-```bash
-uv run --no-project --with mujoco==3.11.0 \
-  python assets/cubesat_so101_grasp/build_model.py
+The checked-in XML is used by the adapter's optional grasp examples; it does
+not need regeneration to start the platform. Do not edit the generated XML
+directly. `build_model.py` supports generation and `--check`; use a dedicated
+uv, Conda or standard venv environment with MuJoCo 3.11.0 for this historical generator.
 
-uv run --no-project --with mujoco==3.11.0 \
-  python assets/cubesat_so101_grasp/build_model.py --check
-```
+Run `scenarios/scenario_cubesat_so101_grasp.py` from
+`test/model/spacecraft_and_arm` using the explicitly selected Python with
+Basilisk/MJScene installed. An ephemeral `uv run --with mujoco` environment
+alone does not provide Basilisk. Environment selection and adapter startup
+are documented in the repository README.
 
-Do not edit `cubesat_so101_grasp.xml` directly. Edit `build_model.py` and
-regenerate it. The source `../cubesat_so101/cubesat_so101.xml` and vendored
-Menagerie SO-101 remain unchanged.
+The scenario returns JSON metrics and fails when grasp/momentum criteria are
+not met. `--no-assert` is for calibration only. Optional `--video` output
+requires compatible native MuJoCo, imageio-ffmpeg, Pillow and working graphics;
+it replays recorded states, rather than running a second dynamics simulation.
 
-## Run the grasp task
-
-```bash
-uv run --no-project --with mujoco==3.11.0 \
-  python scenarios/scenario_cubesat_so101_grasp.py
-```
-
-The command prints JSON metrics and returns a nonzero status if a grasp or
-momentum criterion fails. Use `--no-assert` to collect calibration metrics
-without enforcing thresholds.
-
-Render the recorded Basilisk state history to an H.264 video with:
-
-```bash
-uv run --no-project --with mujoco==3.11.0 \
-  --with imageio-ffmpeg --with pillow \
-  python scenarios/scenario_cubesat_so101_grasp.py \
-  --video tmp/cubesat_so101_grasp.mp4
-```
-
-The renderer replays the generalized states produced by Basilisk; it does not
-run a second MuJoCo simulation. The view follows the gripper and target and
-shows the current task phase and `FREE`/`CONTACT` state. MuJoCo contact-force
-glyphs are hidden by default because they can obscure the narrow target handle;
-enable them explicitly with `--contact-debug` when diagnosing contact physics.
-
-The controller is a six-channel Basilisk joint PID followed by per-actuator
-torque saturation. A quintic joint-space reference performs pregrasp hold,
-approach, closure, hold, withdrawal, and final verification over `10 s`.
+The controller is a six-channel Basilisk PID with torque saturation and a
+10-second quintic joint-space sequence. Contact debug visuals can be enabled
+with `--contact-debug`.
 
 ## Stable target interface
 

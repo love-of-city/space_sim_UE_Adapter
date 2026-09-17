@@ -14,38 +14,19 @@ spacecraft model.
 Do not edit `cubesat_so101.xml` directly. Change the bus source or generator
 arguments and regenerate it.
 
-## Generate and check
+## Optional model development
 
-The generator is pinned to the same MuJoCo version as the local Basilisk
-build:
+The checked-in XML is ready for use; regeneration is not a deployment step.
+Run model-development tools from `test/model/spacecraft_and_arm`.
+`assets/cubesat_so101/build_model.py` generates the composite model and supports
+`--check` for validation. Use a dedicated uv, Conda or standard venv environment with MuJoCo 3.11.0
+for this historical generator, not the platform's Basilisk environment.
 
-```bash
-uv run --no-project --with mujoco==3.11.0 \
-  python assets/cubesat_so101/build_model.py
-
-uv run --no-project --with mujoco==3.11.0 \
-  python assets/cubesat_so101/build_model.py --check
-```
-
-The default bus has full dimensions `0.2263 x 0.2263 x 0.3405 m`, mass
-`24 kg`, a centered center of mass, and uniform-box inertia. The SO-101 base
-is mounted at `[0, 0, 0.17025] m` with its positive Z axis pointing away from
-the bus. These values are placeholders and must be replaced with measured
-spacecraft properties before engineering analysis.
-
-For example, a custom bus and mount can be generated with:
-
-```bash
-uv run --no-project --with mujoco==3.11.0 \
-  python assets/cubesat_so101/build_model.py \
-  --bus-size 0.23 0.23 0.36 \
-  --bus-mass 22 \
-  --mount-pos 0.02 0 0.18 \
-  --mount-quat 1 0 0 0
-```
-
-Use `--bus-fullinertia IXX IYY IZZ IXY IXZ IYZ` to replace the uniform-box
-inertia. Append `--help` to the pinned `uv run` command for the full interface.
+The default bus dimensions are `0.2263 x 0.2263 x 0.3405 m`, mass `24 kg`,
+with centered, uniform-box inertia. The arm mount is `[0, 0, 0.17025] m`.
+These are placeholders, not measured spacecraft properties. Generator options
+include `--bus-size`, `--bus-mass`, `--mount-pos`, `--mount-quat` and
+`--bus-fullinertia`; inspect `--help` before regenerating a model copy.
 
 ## Stable model interface
 
