@@ -8,8 +8,9 @@ param(
 . (Join-Path $PSScriptRoot 'common.ps1')
 Set-BskPythonPath
 $tests = Join-Path $ProjectRoot 'tests'
-$pythonExe = Resolve-BskPython -RequestedPython $Python
-& $pythonExe -m unittest discover -s $tests -v
+$pythonExe = Resolve-BskPython -RequestedPython $Python -RequiredModules @('numpy', 'pytest')
+# pytest also discovers the function-based runtime-selection regressions.
+& $pythonExe -m pytest $tests -q
 if ($LASTEXITCODE -ne 0) { throw 'Python contract tests failed.' }
 
 if (!$SkipUnreal) {

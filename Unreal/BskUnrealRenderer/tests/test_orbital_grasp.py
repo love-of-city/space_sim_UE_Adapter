@@ -84,11 +84,10 @@ class OrbitalGraspContractTests(unittest.TestCase):
 
     def test_derived_mjcf_adds_native_wheels_and_maneuver_actuator(self):
         scenario = _load_scenario()
-        model_root = PROJECT_ROOT.parents[2] / "test" / "model" / "spacecraft_and_arm"
+        model_root = PROJECT_ROOT.parents[1] / "test" / "model" / "spacecraft_and_arm"
         source = model_root / "assets" / "cubesat_so101_grasp" / "cubesat_so101_grasp.xml"
         mesh_directory = model_root / "assets" / "robotstudio_so101" / "assets"
-        if not source.is_file():
-            self.skipTest("external spacecraft_and_arm model is not installed")
+        self.assertTrue(source.is_file(), "Repository model is missing; check the checkout and Git LFS.")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "orbital.xml"
             scenario.build_orbital_mjcf(source, output, mesh_directory)
