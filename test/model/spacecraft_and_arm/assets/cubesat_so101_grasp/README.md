@@ -16,7 +16,7 @@ Basilisk initialization.
 The checked-in XML is used by the adapter's optional grasp examples; it does
 not need regeneration to start the platform. Do not edit the generated XML
 directly. `build_model.py` supports generation and `--check`; use a dedicated
-uv environment with MuJoCo 3.11.0 for this historical generator.
+uv, Conda or standard venv environment with MuJoCo 3.11.0 for this historical generator.
 
 Run `scenarios/scenario_cubesat_so101_grasp.py` from
 `test/model/spacecraft_and_arm` using the explicitly selected Python with

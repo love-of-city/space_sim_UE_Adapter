@@ -15,32 +15,81 @@ Basilisk/MJScene 状态发送端与 UE 5.6 渲染接收端。动力学由仿真�
 
 Windows x64、PowerShell 7、Git LFS、UE 5.6、Visual Studio 2022 C++ 游戏开发工具及 Windows SDK。图形运行需要支持 UE 的 GPU/驱动。Python 3.11+；真实仿真需匹配解释器的 Basilisk/MJScene，mock 与协议测试不依赖它。
 
-所有命令从**本仓库根目录**执行。可复用服务端的仿真环境，无需创建第二套：
+所有命令从**本仓库根目录**执行。可复用服务端的仿真环境。
 
 ```powershell
 git lfs install --local
 git lfs pull
-. .\Unreal\BskUnrealRenderer\scripts\python_runtime.ps1
-$env:SPACE_SIM_PYTHON = Resolve-SpaceSimPython -RepositoryRoot $PWD.Path
 ```
 
-**uv 环境：**
+三种方式均受支持，按现有环境选择 **uv、Conda 或传统 venv/pip 中的一种**。不要在已有仿真环境上重新创建环境。下列新建命令仅供首次配置，Python 版本示例为 3.13，必须按 Basilisk 二进制版本调整。
+
+建议在新的 PowerShell 7 终端操作。切换环境时重新设置 `SPACE_SIM_PYTHON`；该变量优先于已激活环境，避免继续使用上一次选中的解释器。
+
+### A. uv
+
+已有仓库或父工作区的 `.venv`/`venv` 可以自动发现；其他位置可将 `SPACE_SIM_PYTHON` 直接设为目标 `python.exe` 的绝对路径。首次新建环境（已有环境跳过）：
 
 ```powershell
+uv venv .venv --python 3.13
+```
+
+```powershell
+. .\Unreal\BskUnrealRenderer\scripts\python_runtime.ps1
+$env:SPACE_SIM_PYTHON = Resolve-SpaceSimPython -RepositoryRoot $PWD.Path
 uv pip install --python $env:SPACE_SIM_PYTHON -e ".[test]"
 ```
 
-uv 环境中没有 pip 是正常现象，不运行 `ensurepip`。传统 pip 管理的环境可选下面的替代命令，不必两种都执行：
+uv 环境没有 pip 是正常现象；使用 `uv pip --python` 指定环境，无需激活，也不要为此运行 `ensurepip`。本项目尚无覆盖全部原生依赖的 `uv sync` 工作流。
+
+### B. Conda
+
+在支持 `conda activate` 的 PowerShell 7 终端执行。若 shell 尚未初始化，可先运行 `conda init powershell`，然后重新打开终端。环境名 `space-sim` 只是示例，替换为自己的环境名。
+
+首次新建（已有含 Basilisk 的环境跳过）：
 
 ```powershell
+conda create -n space-sim python=3.13 pip
+```
+
+激活、明确选择解释器并安装：
+
+```powershell
+conda activate space-sim
+$env:SPACE_SIM_PYTHON = Join-Path $env:CONDA_PREFIX 'python.exe'
 & $env:SPACE_SIM_PYTHON -m pip install -e ".[test]"
 ```
 
+如果已有 Conda 环境缺少 pip，在该环境激活后用 `conda install pip` 安装。Conda 管理解释器及原生依赖，项目的 editable 包通过该解释器的 pip 安装；无需安装 uv。
+
+### C. 传统 venv / pip
+
+首次新建（已有环境跳过；`py -3.13` 需要对应版本的 Python Launcher/解释器）：
+
 ```powershell
-& $env:SPACE_SIM_PYTHON -c "import numpy; from bsk_render_adapter import BasiliskRenderBridge; print(BasiliskRenderBridge)"
+py -3.13 -m venv .venv
 ```
 
-先激活所需环境，或在仓库/父工作区使用 `.venv`/`venv`。解释器选择顺序为 `-Python`、`SPACE_SIM_PYTHON`、已激活环境、本地环境、PATH；选中环境无效时直接报错。首次创建 uv 环境使用 `uv venv`，Python 版本须与 Basilisk 匹配；不要重建已有仿真环境。Python 包安装不会安装 UE 或 Basilisk，资产导入使用 UE 内置 Python。
+已有环境位于父工作区时，将下面的 `.\.venv` 改为 `..\.venv`，或使用实际路径：
+
+```powershell
+$env:SPACE_SIM_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+& $env:SPACE_SIM_PYTHON -m pip install -e ".[test]"
+```
+
+也可先执行 `.\.venv\Scripts\Activate.ps1` 激活。直接调用解释器无需激活，适用于激活脚本受执行策略限制的情况。若传统 pip 管理的 venv 确实缺少 pip，可用 `& $env:SPACE_SIM_PYTHON -m ensurepip --upgrade` 修复；这一步不用于 uv 管理的环境。
+
+### 共同检查与后续步骤
+
+新建任何一种环境都不会自动安装 Basilisk/MJScene。真实仿真需先按团队的 Basilisk 安装说明准备匹配的原生模块，再检查依赖：
+
+```powershell
+& $env:SPACE_SIM_PYTHON -c "import sys,numpy; from bsk_render_adapter import BasiliskRenderBridge; print(sys.executable); print(BasiliskRenderBridge)"
+# 真实仿真另需检查；仅 mock 可跳过此项
+& $env:SPACE_SIM_PYTHON -c "from Basilisk.simulation import mujoco; print(mujoco.MJScene)"
+```
+
+启动脚本只调用解释器，不要求特定环境管理器。统一优先级：`-Python` → `SPACE_SIM_PYTHON` → 已激活 venv（`VIRTUAL_ENV`）→ 已激活 Conda（`CONDA_PREFIX`）→ 仓库及父工作区 `.venv`/`venv` → PATH。选中环境无效或缺少所需模块时直接报错，不自动切换。三种方式后续均使用同一套测试和启动命令；UE 资产导入仍使用编辑器内置 Python。
 
 ## 2. 构建与测试
 

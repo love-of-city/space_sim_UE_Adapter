@@ -19,7 +19,7 @@ arguments and regenerate it.
 The checked-in XML is ready for use; regeneration is not a deployment step.
 Run model-development tools from `test/model/spacecraft_and_arm`.
 `assets/cubesat_so101/build_model.py` generates the composite model and supports
-`--check` for validation. Use a dedicated uv environment with MuJoCo 3.11.0
+`--check` for validation. Use a dedicated uv, Conda or standard venv environment with MuJoCo 3.11.0
 for this historical generator, not the platform's Basilisk environment.
 
 The default bus dimensions are `0.2263 x 0.2263 x 0.3405 m`, mass `24 kg`,
