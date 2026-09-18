@@ -159,6 +159,7 @@ class BasiliskRenderBridge(_BridgeBase):
         origin_object: str | None = None,
         c_l_n: Iterable[Iterable[float]] | None = None,
         publisher: RenderPublisher | Any | None = None,
+        reliable_frames: bool = False,
         recording_path: str | Path | None = None,
         frame_period_ns: int | None = None,
     ) -> None:
@@ -169,7 +170,7 @@ class BasiliskRenderBridge(_BridgeBase):
         self.session_id = str(uuid.uuid4())
         self.origin_object = origin_object
         self.converter = FrameConverter(c_l_n)
-        self.publisher = publisher or RenderPublisher(host, port)
+        self.publisher = publisher or RenderPublisher(host, port, reliable_frames=reliable_frames)
         self.recorder = BskRecordingWriter(recording_path) if recording_path else None
         self._objects: list[_ObjectBinding] = []
         self._celestial: list[_CelestialBinding] = []

@@ -100,7 +100,7 @@ class RecordingOnlyPublisher:
 
 
 class RenderPublisher:
-    """Publish retained scene data and latest-frame-wins state asynchronously."""
+    """Publish retained scene data; optionally preserve authoritative frames FIFO."""
 
     def __init__(
         self,
@@ -109,12 +109,14 @@ class RenderPublisher:
         reconnect_period_s: float = 0.5,
         event_queue_size: int = 64,
         command_queue_size: int = 64,
+        reliable_frames: bool = False,
     ) -> None:
         self.host = host
         self.port = int(port)
         self.reconnect_period_s = float(reconnect_period_s)
         self.stats = PublisherStats()
-        self._latest_frame: queue.Queue[bytes] = queue.Queue(maxsize=1)
+        self.reliable_frames = reliable_frames
+        self._latest_frame: queue.Queue[bytes] = queue.Queue(maxsize=256 if reliable_frames else 1)
         self._events: queue.Queue[bytes] = queue.Queue(maxsize=event_queue_size)
         self._commands: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=command_queue_size)
         self._receive_buffer = bytearray()
@@ -153,9 +155,18 @@ class RenderPublisher:
         self.start()
 
     def publish_frame(self, message: dict[str, Any]) -> None:
-        """Queue a frame without ever waiting for the network."""
+        """Queue a frame; dataset mode applies bounded backpressure, preview replaces."""
 
         packet = encode_packet(message)
+        if self.reliable_frames:
+            self.start()
+            try:
+                self._latest_frame.put(packet, timeout=10.0)
+            except queue.Full as error:
+                raise RuntimeError("authoritative render queue full; refusing to drop a dataset frame") from error
+            self.stats.frames_queued += 1
+            self._wake.set()
+            return
         try:
             self._latest_frame.put_nowait(packet)
         except queue.Full:
@@ -246,6 +257,7 @@ class RenderPublisher:
         connection: socket.socket | None = None
         connection_generation = -1
         pending_event: bytes | None = None
+        pending_frame: bytes | None = None
         while not self._stop.is_set():
             if connection is None:
                 try:
@@ -281,16 +293,18 @@ class RenderPublisher:
                     self.stats.controls_sent += 1
                     continue
 
-                frame: bytes | None = None
-                try:
-                    frame = self._latest_frame.get_nowait()
-                    while True:
-                        frame = self._latest_frame.get_nowait()
-                        self.stats.frames_dropped += 1
-                except queue.Empty:
-                    pass
-                if frame is not None:
-                    connection.sendall(frame)
+                if pending_frame is None:
+                    try:
+                        pending_frame = self._latest_frame.get_nowait()
+                        if not self.reliable_frames:
+                            while True:
+                                pending_frame = self._latest_frame.get_nowait()
+                                self.stats.frames_dropped += 1
+                    except queue.Empty:
+                        pass
+                if pending_frame is not None:
+                    connection.sendall(pending_frame)
+                    pending_frame = None
                     self.stats.frames_sent += 1
                     self.stats.last_error = None
                     self._receive_commands(connection)
@@ -299,6 +313,8 @@ class RenderPublisher:
                 self._wake.clear()
             except (OSError, ConnectionError, ValueError, UnicodeError) as error:
                 self.stats.last_error = str(error)
+                if not self.reliable_frames:
+                    pending_frame = None
                 try:
                     connection.close()
                 finally:

@@ -11,7 +11,7 @@ class FRunnableThread;
 class BSKUNREALRUNTIME_API FBskTcpReceiver final : public FRunnable, public IBskFrameSource
 {
 public:
-    FBskTcpReceiver(FString InListenAddress, uint16 InPort, uint32 InMaxPacketBytes);
+    FBskTcpReceiver(FString InListenAddress, uint16 InPort, uint32 InMaxPacketBytes, bool bInReliableFrames = false);
     virtual ~FBskTcpReceiver() override;
 
     bool StartReceiver();
@@ -32,6 +32,7 @@ public:
 
 private:
     friend class FBskReceiverResetTest;
+    friend class FBskReliableFramesTest;
     bool CreateListener();
     void CloseClient();
     void CloseSockets();
@@ -51,6 +52,8 @@ private:
     TAtomic<uint64> OverwrittenFrameCount{0};
     TAtomic<bool> bClientConnected{false};
     mutable FCriticalSection LatestMutex;
+    bool bReliableFrames = false;
+    TArray<FBskRenderFrame> ReliableFrames;
     TSharedPtr<FBskRenderFrame, ESPMode::ThreadSafe> LatestFrame;
     TSharedPtr<FBskSceneManifest, ESPMode::ThreadSafe> LatestManifest;
     TArray<FBskRenderEvent> Events;

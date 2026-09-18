@@ -1,5 +1,6 @@
 #include "BskSceneController.h"
 #include "BskPreviewCadence.h"
+#include "BskLeRobotSampling.h"
 #include "BskCelestialLighting.h"
 
 #include "BskTcpReceiver.h"
@@ -564,7 +565,8 @@ void ABskSceneController::BeginPlay()
         }
     }
     if (!ReplayPath.IsEmpty()) Receiver = MakeUnique<FBskReplaySource>(ReplayPath, ReplayRate);
-    else Receiver = MakeUnique<FBskTcpReceiver>(ListenAddress, static_cast<uint16>(ListenPort), MaxPacketBytes);
+    else Receiver = MakeUnique<FBskTcpReceiver>(ListenAddress, static_cast<uint16>(ListenPort), MaxPacketBytes,
+        !CaptureOutputDirectory.IsEmpty() || CaptureNetworkSender.IsValid());
     Receiver->StartSource();
 }
 
@@ -2353,6 +2355,9 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
     {
         const TArray<FString>& Products = CaptureProductOverride.IsEmpty() ? Pair.Value.CaptureProducts : CaptureProductOverride;
         if (Products.IsEmpty()) continue;
+        const double DatasetRate = CaptureRateOverrideHertz > 0.0 ? CaptureRateOverrideHertz : Pair.Value.CaptureRateHertz;
+        int64 DatasetSampleIndex = 0;
+        if (!BskLeRobotSample(AuthoritativeFrame.SimulationTimeNanoseconds, DatasetRate, DatasetSampleIndex)) continue;
         const int64 NextCaptureNanoseconds = CameraNextDataCaptureSimulationNanoseconds.FindRef(Pair.Key);
         if (AuthoritativeFrame.SimulationTimeNanoseconds < NextCaptureNanoseconds) continue;
         DueCameras.Add(Pair.Key);
@@ -2392,12 +2397,7 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
             UE_LOG(LogBskUnreal, Error, TEXT("Authoritative capture for %s frame=%lld failed: %s"),
                 *CameraId, AuthoritativeFrame.FrameId, *Error);
         }
-        const double Rate = CaptureRateOverrideHertz > 0.0 ? CaptureRateOverrideHertz : Definition->CaptureRateHertz;
-        const int64 PeriodNanoseconds = FMath::Max<int64>(1, FMath::RoundToInt64(1.0e9 / FMath::Max(1.0, Rate)));
-        int64 Next = CameraNextDataCaptureSimulationNanoseconds.FindRef(CameraId);
-        if (Next <= 0) Next = AuthoritativeFrame.SimulationTimeNanoseconds;
-        do { Next += PeriodNanoseconds; } while (Next <= AuthoritativeFrame.SimulationTimeNanoseconds);
-        CameraNextDataCaptureSimulationNanoseconds.Add(CameraId, Next);
+        CameraNextDataCaptureSimulationNanoseconds.Add(CameraId, AuthoritativeFrame.SimulationTimeNanoseconds + 1);
     }
     if (bHasPresentationFrame) ApplyFrame(PresentationFrame, false);
 }
@@ -2621,6 +2621,20 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         Request.Purpose == EBskCapturePurpose::AuthoritativeDataset ? TEXT("authoritative") : TEXT("preview"));
     Metadata->SetStringField(TEXT("state_kind"),
         Request.Purpose == EBskCapturePurpose::AuthoritativeDataset ? TEXT("authoritative") : TEXT("presentation"));
+    if (Request.Purpose == EBskCapturePurpose::AuthoritativeDataset)
+    {
+        const double DatasetRate = CaptureRateOverrideHertz > 0.0 ? CaptureRateOverrideHertz : Definition->CaptureRateHertz;
+        int64 DatasetSampleIndex = 0;
+        if (!BskLeRobotSample(Request.SimulationTimeNanoseconds, DatasetRate, DatasetSampleIndex))
+        {
+            OutError = TEXT("authoritative capture is outside the LeRobot sampling grid");
+            return false;
+        }
+        Metadata->SetStringField(TEXT("dataset_format"), TEXT("lerobot-v3"));
+        Metadata->SetNumberField(TEXT("sampling_fps"), DatasetRate);
+        Metadata->SetStringField(TEXT("sample_index"), LexToString(DatasetSampleIndex));
+        Metadata->SetStringField(TEXT("sampling_clock"), TEXT("simulation"));
+    }
     Metadata->SetStringField(TEXT("capture_sequence"), LexToString(Sequence));
     Metadata->SetStringField(TEXT("source_frame_id"), LexToString(Request.FrameId));
     Metadata->SetStringField(TEXT("sim_time_ns"), LexToString(Request.SimulationTimeNanoseconds));

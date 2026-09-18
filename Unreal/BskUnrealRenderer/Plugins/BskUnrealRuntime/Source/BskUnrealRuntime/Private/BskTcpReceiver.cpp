@@ -10,10 +10,11 @@
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 
-FBskTcpReceiver::FBskTcpReceiver(FString InListenAddress, uint16 InPort, uint32 InMaxPacketBytes)
+FBskTcpReceiver::FBskTcpReceiver(FString InListenAddress, uint16 InPort, uint32 InMaxPacketBytes, bool bInReliableFrames)
     : ListenAddress(MoveTemp(InListenAddress))
     , Port(InPort)
     , Parser(InMaxPacketBytes)
+    , bReliableFrames(bInReliableFrames)
 {
 }
 
@@ -101,6 +102,13 @@ void FBskTcpReceiver::SetStatus(const FString& NewStatus)
 bool FBskTcpReceiver::ConsumeLatest(FBskRenderFrame& OutFrame)
 {
     FScopeLock Lock(&LatestMutex);
+    if (bReliableFrames)
+    {
+        if (LatestManifest.IsValid() || ReliableFrames.IsEmpty()) return false;
+        OutFrame = MoveTemp(ReliableFrames[0]);
+        ReliableFrames.RemoveAt(0, 1, EAllowShrinking::No);
+        return true;
+    }
     if (LatestManifest.IsValid() || !LatestFrame.IsValid())
     {
         return false;
@@ -130,6 +138,26 @@ bool FBskTcpReceiver::ConsumeEvent(FBskRenderEvent& OutEvent)
 
 void FBskTcpReceiver::PublishLatest(FBskRenderFrame&& Frame)
 {
+    if (bReliableFrames)
+    {
+        // Bounded FIFO applies TCP backpressure instead of overwriting unseen
+        // authoritative frames. Release the lock while the game thread drains.
+        while (!bStopRequested.Load())
+        {
+            {
+                FScopeLock Lock(&LatestMutex);
+                if (!IncomingSessionId.IsEmpty() && !Frame.SessionId.IsEmpty() && Frame.SessionId != IncomingSessionId) return;
+                if (ReliableFrames.Num() < 128)
+                {
+                    ReliableFrames.Add(MoveTemp(Frame));
+                    ++ReceivedFrameCount;
+                    return;
+                }
+            }
+            FPlatformProcess::Sleep(0.001f);
+        }
+        return;
+    }
     FScopeLock Lock(&LatestMutex);
     if (!IncomingSessionId.IsEmpty() && !Frame.SessionId.IsEmpty() && Frame.SessionId != IncomingSessionId) return;
     if (LatestFrame.IsValid())
@@ -146,6 +174,7 @@ void FBskTcpReceiver::PublishManifest(FBskSceneManifest&& Manifest)
     if (IncomingSessionId != Manifest.SessionId)
     {
         LatestFrame.Reset();
+        ReliableFrames.Reset();
         Events.Reset();
         IncomingSessionId = Manifest.SessionId;
     }
@@ -156,7 +185,7 @@ void FBskTcpReceiver::PublishEvent(FBskRenderEvent&& Event)
 {
     FScopeLock Lock(&LatestMutex);
     if (!IncomingSessionId.IsEmpty() && Event.SessionId != IncomingSessionId) return;
-    if (Event.EventKind == TEXT("scene_reset")) LatestFrame.Reset();
+    if (Event.EventKind == TEXT("scene_reset")) { LatestFrame.Reset(); ReliableFrames.Reset(); }
     constexpr int32 MaxPendingEvents = 64;
     if (Events.Num() >= MaxPendingEvents) Events.RemoveAt(0, 1, EAllowShrinking::No);
     Events.Add(MoveTemp(Event));
