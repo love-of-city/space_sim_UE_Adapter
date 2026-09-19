@@ -2014,7 +2014,7 @@ AActor* ABskSceneController::SpawnTexturedEarth(const FString& ActorName, double
     {
         UE_LOG(LogBskUnreal, Warning, TEXT("Earth cloud material unavailable: %s"), *EarthCloudMaterialPath);
     }
-    if (!AddLayer(TEXT("EarthAtmosphereShell"), AtmosphereMaterial, EarthAtmosphereScale))
+    if (!bUseEarthSkyAtmosphere && !AddLayer(TEXT("EarthAtmosphereShell"), AtmosphereMaterial, EarthAtmosphereScale))
     {
         UE_LOG(LogBskUnreal, Warning, TEXT("Earth atmosphere-shell material unavailable: %s"), *EarthAtmosphereMaterialPath);
     }
@@ -2096,7 +2096,6 @@ AActor* ABskSceneController::SpawnCelestialBody(const FBskCelestialBodyDefinitio
             Atmosphere->TransformMode = ESkyAtmosphereTransformMode::PlanetCenterAtComponentTransform;
             Atmosphere->SetBottomRadius(static_cast<float>(Definition.EquatorialRadiusMeters / 1000.0));
             Atmosphere->SetAtmosphereHeight(100.0f);
-            Atmosphere->SetGroundAlbedo(FColor(32, 48, 70));
             Atmosphere->SetMultiScatteringFactor(1.0f);
             EarthAtmosphere->SetActorHiddenInGame(true);
             UE_LOG(LogBskUnreal, Display, TEXT("Created UE SkyAtmosphere for BSK Earth radius %.3f km"), Definition.EquatorialRadiusMeters / 1000.0);

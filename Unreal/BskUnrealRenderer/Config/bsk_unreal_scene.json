@@ -31,7 +31,7 @@
   },
   "scene": {
     "use_official_celestial_assets": true,
-    "use_earth_sky_atmosphere": false,
+    "use_earth_sky_atmosphere": true,
     "celestial_vault_radius_km": 500000.0,
     "celestial_background_intensity": 0.12,
     "sun_intensity_lux": 1.0,
