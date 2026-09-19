@@ -52,6 +52,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/Parse.h"
@@ -480,9 +481,69 @@ void ApplyUnlitColor(UStaticMeshComponent* Component, UObject* Owner, const FLin
     }
 }
 
+// Exact mesh-object-path overrides are visual only. They deliberately do not use
+// numeric geom indices (which change between MJCF variants) or broad name matches.
+bool ApplyConfiguredMaterialOverride(UStaticMeshComponent* Component, const FBskGeometryDefinition& Geometry)
+{
+    if (!GConfig || Geometry.AssetPath.IsEmpty() || Geometry.RenderRole != TEXT("visual") ||
+        FParse::Param(FCommandLine::Get(), TEXT("BskDisableMaterialOverrides"))) return false;
+    bool bEnabled = false;
+    GConfig->GetBool(TEXT("Bsk.MaterialOverrides"), TEXT("Enabled"), bEnabled, GGameIni);
+    if (!bEnabled) return false;
+    FString MaterialPath;
+    if (!GConfig->GetString(TEXT("Bsk.MaterialOverrides"), *Geometry.AssetPath, MaterialPath, GGameIni) ||
+        MaterialPath.IsEmpty()) return false;
+    UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+    if (!Material)
+    {
+        UE_LOG(LogBskUnreal, Warning, TEXT("Material override missing: %s for %s; using original material"),
+            *MaterialPath, *Geometry.AssetPath);
+        return false;
+    }
+    const int32 SlotCount = FMath::Max(1, Component->GetNumMaterials());
+    for (int32 Slot = 0; Slot < SlotCount; ++Slot) Component->SetMaterial(Slot, Material);
+    UE_LOG(LogBskUnreal, Log, TEXT("Applied visual material override %s to %s (%s)"),
+        *MaterialPath, *Geometry.AssetPath, *Geometry.GeometryId);
+    return true;
+}
+
+// Render-only skins are children of the original mesh component. This preserves
+// body transforms and component scaling without changing source geometry/physics.
+void AttachConfiguredVisualOverlay(UStaticMeshComponent* Parent, const FBskGeometryDefinition& Geometry)
+{
+    if (!Parent || !GConfig || Geometry.AssetPath.IsEmpty() || Geometry.RenderRole == TEXT("collision") ||
+        FParse::Param(FCommandLine::Get(), TEXT("BskDisableVisualOverlays"))) return;
+    bool bEnabled = false;
+    GConfig->GetBool(TEXT("Bsk.VisualOverlays"), TEXT("Enabled"), bEnabled, GGameIni);
+    if (!bEnabled) return;
+    FString MeshPath;
+    if (!GConfig->GetString(TEXT("Bsk.VisualOverlays"), *Geometry.AssetPath, MeshPath, GGameIni) || MeshPath.IsEmpty()) return;
+    UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *MeshPath);
+    if (!Mesh)
+    {
+        UE_LOG(LogBskUnreal, Warning, TEXT("Visual overlay missing: %s for %s; original mesh retained"), *MeshPath, *Geometry.AssetPath);
+        return;
+    }
+    AActor* Owner = Parent->GetOwner();
+    UStaticMeshComponent* Overlay = NewObject<UStaticMeshComponent>(Owner,
+        MakeUniqueObjectName(Owner, UStaticMeshComponent::StaticClass(), TEXT("VisualOverlay")));
+    Overlay->SetMobility(EComponentMobility::Movable);
+    Overlay->SetStaticMesh(Mesh); // Keep the overlay's own UV material slots.
+    Overlay->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Overlay->SetGenerateOverlapEvents(false);
+    Overlay->SetCanEverAffectNavigation(false);
+    Overlay->SetCastShadow(true);
+    Overlay->SetupAttachment(Parent);
+    Overlay->SetRelativeTransform(FTransform::Identity);
+    Owner->AddInstanceComponent(Overlay);
+    Overlay->RegisterComponent();
+    UE_LOG(LogBskUnreal, Log, TEXT("Attached visual-only overlay %s to %s (%s)"), *MeshPath, *Geometry.AssetPath, *Geometry.GeometryId);
+}
+
 void ApplyGeometryMaterial(UStaticMeshComponent* Component, UObject* Owner, const FBskGeometryDefinition& Geometry, double Ambient)
 {
     if (!Component) return;
+    if (ApplyConfiguredMaterialOverride(Component, Geometry)) return;
     if (Geometry.bUseAssetMaterials && Geometry.MaterialName.IsEmpty()) return;
     const bool bTranslucent = Geometry.Color.A < 0.999f;
     const TCHAR* MaterialPath = bTranslucent
@@ -1882,6 +1943,7 @@ AActor* ABskSceneController::SpawnManifestObject(const FBskObjectDefinition& Def
         Component->SetRelativeRotation(FQuat(Converter.ActiveLocalWxyzToUnreal(Geometry.OrientationBodyFromGeometryWxyz)));
         Component->SetRelativeScale3D(FVector(ResolvedMeshAssets.Contains(Index) ? Geometry.Scale : Geometry.DimensionsMeters));
         ApplyGeometryMaterial(Component, Actor, Geometry, ActiveMaterialAmbient);
+        AttachConfiguredVisualOverlay(Component, Geometry);
     }
     return Actor;
 }
