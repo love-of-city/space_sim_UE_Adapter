@@ -3611,6 +3611,7 @@ void ABskSceneController::CreateEnvironment()
             Directional->SetLightSourceSoftAngle(0.0f);
             Directional->SetAtmosphereSunLight(true);
             Directional->SetAtmosphereSunLightIndex(0);
+            Directional->SetForwardShadingPriority(1);
             Directional->bPerPixelAtmosphereTransmittance = false;
             Directional->CloudScatteredLuminanceScale = FLinearColor::White;
         }
