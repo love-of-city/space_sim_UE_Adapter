@@ -85,7 +85,7 @@ if ($needsImport -or $configuredSignature -ne $meshSettingsSignature) {
         # StaticMeshEditorSubsystem rejects changes from PythonScriptCommandlet.
         # Execute in a headless editor session so LOD build settings are really
         # written, rebuilt, and saved rather than only logged as configured.
-        & $editorCmd $ProjectFile "-ExecutePythonScript=$meshConfigScript" -unattended -nop4 -nosplash
+        & $editorCmd $ProjectFile "-ExecutePythonScript=$meshConfigScript" -nullrhi -unattended -nop4 -nosplash
         if ($LASTEXITCODE -ne 0) { throw "MJCF mesh build-setting configuration failed with exit code $LASTEXITCODE." }
         Set-Content -LiteralPath $meshSettingsMarker -Value $meshSettingsSignature -Encoding ascii
     } finally {

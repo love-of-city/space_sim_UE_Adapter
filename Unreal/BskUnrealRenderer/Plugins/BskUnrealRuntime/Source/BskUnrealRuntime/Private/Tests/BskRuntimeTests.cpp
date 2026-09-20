@@ -335,7 +335,9 @@ bool FBskUr5eAssetLoadTest::RunTest(const FString& Parameters)
     {
         const FVector Extent = Mesh->GetBounds().BoxExtent;
         TestTrue(TEXT("metres-to-centimetres scale is baked while building LOD0"), Extent.GetMax() > 5.0 && Extent.GetMax() < 10.0);
+#if WITH_EDITORONLY_DATA
         TestFalse(TEXT("UR5e mesh does not depend on a Nanite fallback"), Mesh->NaniteSettings.bEnabled);
+#endif
         const FStaticMeshRenderData* RenderData = Mesh->GetRenderData();
         TestNotNull(TEXT("UR5e mesh has standard render data"), RenderData);
         if (RenderData && RenderData->LODResources.Num() > 0)
