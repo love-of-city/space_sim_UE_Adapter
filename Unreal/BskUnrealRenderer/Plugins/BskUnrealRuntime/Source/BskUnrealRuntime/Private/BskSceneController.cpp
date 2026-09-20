@@ -41,6 +41,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
@@ -659,6 +660,21 @@ void ABskSceneController::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     const double TickStart = bVideoDiagnostics ? FPlatformTime::Seconds() : 0.0;
     check(IsInGameThread());
+    if (MaximumStreamingFrameRate > 0)
+    {
+        IConsoleVariable* RequestedRate = IConsoleManager::Get().FindConsoleVariable(TEXT("PixelStreaming2.WebRTC.Fps"));
+        IConsoleVariable* RenderRate = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+        if (RequestedRate && RenderRate)
+        {
+            const int32 FrameRate = FMath::Clamp(RequestedRate->GetInt(), 1, MaximumStreamingFrameRate);
+            if (!FMath::IsNearlyEqual(RenderRate->GetFloat(), static_cast<float>(FrameRate)))
+            {
+                RenderRate->Set(static_cast<float>(FrameRate), ECVF_SetByConsole);
+                UE_LOG(LogBskUnreal, Display, TEXT("Streaming render frame rate changed to %d FPS (launch ceiling %d)"),
+                    FrameRate, MaximumStreamingFrameRate);
+            }
+        }
+    }
     if (Receiver)
     {
         FBskSceneManifest Manifest;
@@ -1169,6 +1185,8 @@ void ABskSceneController::ConfigureCaptureOutput()
 
 void ABskSceneController::ConfigurePixelStreamingOutput()
 {
+    if (FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingWebRTCFps="), MaximumStreamingFrameRate))
+        MaximumStreamingFrameRate = FMath::Clamp(MaximumStreamingFrameRate, 1, 120);
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingURL="), PixelStreamingConnectionUrl);
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingBaseId="), PixelStreamingBaseId);
     bVideoDiagnostics = FParse::Param(FCommandLine::Get(), TEXT("BskVideoDiagnostics"));
