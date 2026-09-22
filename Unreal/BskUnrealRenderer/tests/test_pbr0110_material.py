@@ -21,11 +21,9 @@ def test_source_roles_and_normal_convention():
 
 
 def test_local_sources_match_downloaded_files():
-    import pytest
     config = json.loads((SOURCE / 'source.json').read_text(encoding='utf-8'))
-    if not all((SOURCE/f['file']).exists() for f in config['textures']):
-        pytest.skip('Account-licensed maps are intentionally not distributed in git')
     for record in config['textures']:
+        assert (SOURCE/record['file']).is_file(), 'Run git lfs pull to restore source textures'
         assert hashlib.sha256((SOURCE/record['file']).read_bytes()).hexdigest() == record['sha256']
 
 
@@ -57,3 +55,16 @@ def test_configuration_leaves_the_other_satellite_unchanged():
     config.read(ROOT/'Config/DefaultGame.ini',encoding='utf-8-sig')
     assert config['Bsk.MaterialOverrides']['/Game/BSK/Generated/SARM/part_001_color_00.part_001_color_00'] == '/Game/BSK/Materials/Foil002/MI_BskFoil002.MI_BskFoil002'
     assert config['Bsk.VisualOverlays']['/Game/BSK/Generated/SARM/base_link.base_link'] == '/Game/BSK/VisualOverlays/SarmMLI_PBR0110/SM_SarmMLI_PBR0110.SM_SarmMLI_PBR0110'
+
+
+def test_bundled_runtime_assets_are_materialized():
+    assets = [ROOT / 'Content/BSK/Materials/PBR0110' / f'T_PBR0110_{role}.uasset'
+              for role in ('albedo', 'normal', 'roughness', 'metallic', 'ao')]
+    assets += [ROOT / 'Content/BSK/VisualOverlays/SarmMLI_PBR0110' / f'{name}.uasset'
+               for name in ('SM_SarmMLI_PBR0110', 'MI_PBR0110_MliFace',
+                            'MI_PBR0110_MliHem', 'MI_PBR0110_MliBacking')]
+    assets += [SOURCE / 'Continuous' / f'SM_SarmMLI_PBR0110.{ext}' for ext in ('obj', 'mtl')]
+    for path in assets:
+        assert path.is_file(), f'Missing bundled asset: {path}'
+        with path.open('rb') as stream:
+            assert not stream.read(100).startswith(b'version https://git-lfs.github.com/spec/v1'), path

@@ -35,7 +35,7 @@ $manifestPath = Join-Path $source 'source.json'
 $config = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $inputs = @($script,$manifestPath,$original,$parent,$generator,$recipe) + $geometryFiles + @($config.textures | ForEach-Object { Join-Path $source $_.file })
 foreach ($path in $inputs) {
-    if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "PBR0110 local source missing: $path. Download the free maps using your own Textures.com account; assets are not bundled for redistribution." }
+    if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "PBR0110 local source missing: $path. Run git lfs pull to restore the tracked PBR0110 assets." }
 }
 $signature = (($inputs | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }) -join '|')
 $old = if (Test-Path -LiteralPath $marker) { (Get-Content -LiteralPath $marker -Raw).Trim() } else { '' }

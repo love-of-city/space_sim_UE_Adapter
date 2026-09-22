@@ -30,7 +30,9 @@ or the other satellite's Foil002 material override.
 
 ## Local rebuild
 
-Store the six originally downloaded TIFFs under `ContentSource/PBR0110/maps/`.
+The six original TIFFs under `ContentSource/PBR0110/maps/`, continuous OBJ/MTL
+sources, and generated UE assets are tracked in this repository. After cloning,
+run `git lfs pull` to materialize the textures and UE/OBJ assets.
 Names and SHA-256 values are in `ContentSource/PBR0110/source.json`.
 Continuous mesh source is generated from `ContentSource/PBR0110/Continuous/recipe.json`
 by `scripts/generate_pbr0110_blanket.py`. This generator and its recipe are separate
@@ -49,8 +51,8 @@ Only the helper process launched by the preparation script is stopped on timeout
 existing user UE processes are not terminated.
 
 Validation output is `Saved/AssetImport/pbr0110_validation.json` and
-`Saved/AssetImport/pbr0110_build.log`. Missing account-licensed source files cause
-an explicit error; this script never logs into Textures.com or purchases files.
+`Saved/AssetImport/pbr0110_build.log`. Missing source files cause an explicit error; run `git lfs pull` first.
+This script never logs into Textures.com or purchases files.
 
 ## Selection / rollback
 
@@ -78,7 +80,8 @@ Local static replays and actual UE screenshots are in the server workspace's
 separate receiver port and never connects to the live physics stream. This is
 an inspection-light preview, not a claim about lighting in every platform scene.
 
-The downloaded textures and generated dependent assets are git-ignored to avoid
-redistributing the account-licensed material. Textures.com free downloads are not
+As of 2026-09-22, the source textures and generated dependent assets are tracked
+at the repository owner's request. Inclusion in this repository does not change
+the original license or grant additional usage rights. Textures.com free downloads are not
 CC0. This change is for local visual evaluation, not an authorization to use the
 asset in training datasets, machine learning or redistribution.
