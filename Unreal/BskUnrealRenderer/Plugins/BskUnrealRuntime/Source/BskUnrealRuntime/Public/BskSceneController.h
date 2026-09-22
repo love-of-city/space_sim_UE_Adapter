@@ -195,14 +195,6 @@ private:
     UPROPERTY(Transient)
     TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraRenderTargets;
     UPROPERTY(Transient)
-    TMap<FString, TObjectPtr<USceneCaptureComponent2D>> CameraDepthCaptureComponents;
-    UPROPERTY(Transient)
-    TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraDepthRenderTargets;
-    UPROPERTY(Transient)
-    TMap<FString, TObjectPtr<USceneCaptureComponent2D>> CameraSegmentationCaptureComponents;
-    UPROPERTY(Transient)
-    TMap<FString, TObjectPtr<UTextureRenderTarget2D>> CameraSegmentationRenderTargets;
-    UPROPERTY(Transient)
     TMap<FString, TObjectPtr<USceneCaptureComponent2D>> PixelStreamingCameraCaptures;
     UPROPERTY(Transient)
     TMap<FString, TObjectPtr<UTextureRenderTarget2D>> PixelStreamingCameraTargets;

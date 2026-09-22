@@ -297,7 +297,7 @@ bool FBskProtocolV2ManifestTest::RunTest(const FString& Parameters)
     FBskRenderMessage CaptureCameraMessage;
     FString CaptureCameraError;
     const bool bCaptureCameraParsed = FBskFrameParser::ParseMessageJson(
-        TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"session_id\":\"pip\",\"revision\":\"2\",\"objects\":[],\"celestial_bodies\":[],\"visuals\":[],\"cameras\":[{\"camera_id\":\"sat/camera/wrist\",\"display_name\":\"Wrist\",\"parent_id\":\"sat/wrist\",\"position_body_m\":[0,0,0],\"orientation_body_from_camera_wxyz\":[1,0,0,0],\"field_of_view_rad\":1.2,\"resolution\":[480,270],\"picture_in_picture\":true,\"capture_rate_hz\":15,\"picture_in_picture_slot\":2,\"capture_products\":[\"rgb\",\"depth\",\"segmentation\"]}],\"settings\":{\"ui\":{\"commands\":[{\"command\":\"mission.pause\",\"label\":\"Pause\",\"payload\":{\"mode\":\"hold\"},\"requires_confirmation\":true}]}}}"),
+        TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"session_id\":\"pip\",\"revision\":\"2\",\"objects\":[],\"celestial_bodies\":[],\"visuals\":[],\"cameras\":[{\"camera_id\":\"sat/camera/wrist\",\"display_name\":\"Wrist\",\"parent_id\":\"sat/wrist\",\"position_body_m\":[0,0,0],\"orientation_body_from_camera_wxyz\":[1,0,0,0],\"field_of_view_rad\":1.2,\"resolution\":[480,270],\"picture_in_picture\":true,\"capture_rate_hz\":15,\"picture_in_picture_slot\":2,\"capture_products\":[\"rgb\"]}],\"settings\":{\"ui\":{\"commands\":[{\"command\":\"mission.pause\",\"label\":\"Pause\",\"payload\":{\"mode\":\"hold\"},\"requires_confirmation\":true}]}}}"),
         CaptureCameraMessage,
         CaptureCameraError);
     TestTrue(*CaptureCameraError, bCaptureCameraParsed);
@@ -310,7 +310,17 @@ bool FBskProtocolV2ManifestTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("PIP camera resolution"), Camera.Resolution, FIntPoint(480, 270));
         TestEqual(TEXT("PIP camera capture rate"), Camera.CaptureRateHertz, 15.0);
         TestEqual(TEXT("PIP camera slot"), Camera.PictureInPictureSlot, 2);
-        TestEqual(TEXT("camera data products"), Camera.CaptureProducts.Num(), 3);
+        TestEqual(TEXT("camera data products"), Camera.CaptureProducts.Num(), 1);
+    }
+    for (const FString Product : {FString(TEXT("depth")), FString(TEXT("segmentation"))})
+    {
+        FBskRenderMessage RejectedMessage;
+        FString RejectedError;
+        const FString Json = FString::Printf(
+            TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"scene_manifest\",\"session_id\":\"rgb-only\",\"revision\":\"1\",\"objects\":[],\"celestial_bodies\":[],\"visuals\":[],\"cameras\":[{\"camera_id\":\"wrist\",\"capture_products\":[\"rgb\",\"%s\"]}],\"settings\":{}}"), *Product);
+        TestFalse(TEXT("removed capture product rejects the manifest"),
+            FBskFrameParser::ParseMessageJson(Json, RejectedMessage, RejectedError));
+        TestTrue(TEXT("rejection identifies the unsupported capture product"), RejectedError.Contains(Product));
     }
     TestEqual(TEXT("one UI command"), CaptureCameraMessage.Manifest.UiCommands.Num(), 1);
     if (CaptureCameraMessage.Manifest.UiCommands.Num() == 1)

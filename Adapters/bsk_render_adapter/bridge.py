@@ -162,10 +162,16 @@ class BasiliskRenderBridge(_BridgeBase):
         reliable_frames: bool = False,
         recording_path: str | Path | None = None,
         frame_period_ns: int | None = None,
+        frame_rate_hz: int | None = None,
     ) -> None:
         super().__init__()
         if frame_period_ns is not None and int(frame_period_ns) <= 0:
             raise ValueError("frame_period_ns must be positive when provided")
+        if frame_rate_hz is not None and (frame_rate_hz <= 0 or int(frame_rate_hz) != frame_rate_hz):
+            raise ValueError("frame_rate_hz must be a positive integer")
+        if frame_period_ns is not None and frame_rate_hz is not None:
+            raise ValueError("choose frame_period_ns or frame_rate_hz, not both")
+        self.frame_rate_hz = int(frame_rate_hz) if frame_rate_hz is not None else None
         self.ModelTag = "BasiliskRenderBridge"
         self.session_id = str(uuid.uuid4())
         self.origin_object = origin_object
@@ -771,6 +777,12 @@ class BasiliskRenderBridge(_BridgeBase):
 
         current_sim_ns = int(CurrentSimNanos)
         self._dispatch_commands(current_sim_ns)
+        if self.frame_rate_hz is not None:
+            rate = self.frame_rate_hz
+            tick = (current_sim_ns * rate + 500_000_000) // 1_000_000_000
+            expected = (tick * 1_000_000_000 + rate // 2) // rate
+            if current_sim_ns != expected or self._last_published_sim_time_ns == current_sim_ns:
+                return
         if self.frame_period_ns is not None and current_sim_ns < self._next_frame_ns:
             return
 

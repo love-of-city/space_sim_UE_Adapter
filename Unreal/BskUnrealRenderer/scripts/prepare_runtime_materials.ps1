@@ -9,6 +9,13 @@ $ue = Resolve-UnrealRoot $UnrealRoot
 # Isolated foil assets have their own source fingerprint and rebuild cache.
 & (Join-Path $PSScriptRoot 'prepare_foil_material.ps1') -UnrealRoot $ue -Force:$Force
 & (Join-Path $PSScriptRoot 'prepare_sarm_blanket.ps1') -UnrealRoot $ue -Force:$Force
+
+# Optional account-licensed PBR0110 preview; build only when selected on the arm satellite.
+$gameConfig = Get-Content -LiteralPath (Join-Path $ProjectRoot 'Config\DefaultGame.ini') -Raw
+if ($gameConfig -match '(?m)^/Game/BSK/Generated/SARM/base_link\.base_link=/Game/BSK/VisualOverlays/SarmMLI_PBR0110/') {
+    & (Join-Path $PSScriptRoot 'prepare_pbr0110_material.ps1') -UnrealRoot $ue -Force:$Force
+}
+
 $opaque = Join-Path $ProjectRoot 'Content\BSK\M_BskPbrOpaque.uasset'
 $translucent = Join-Path $ProjectRoot 'Content\BSK\M_BskPbrTranslucent.uasset'
 if (!$Force -and (Test-Path -LiteralPath $opaque) -and (Test-Path -LiteralPath $translucent)) {

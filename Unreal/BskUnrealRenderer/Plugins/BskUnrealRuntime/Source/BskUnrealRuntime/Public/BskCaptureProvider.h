@@ -6,9 +6,7 @@ class AActor;
 
 enum class EBskCaptureChannel : uint8
 {
-    Rgb,
-    Depth,
-    SemanticSegmentation
+    Rgb
 };
 
 enum class EBskCapturePurpose : uint8

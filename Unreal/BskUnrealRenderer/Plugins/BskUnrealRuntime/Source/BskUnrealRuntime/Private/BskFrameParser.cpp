@@ -375,7 +375,7 @@ bool ParseManifest(const TSharedPtr<FJsonObject>& Root, FBskSceneManifest& Out, 
                         return false;
                     }
                     Product = Product.TrimStartAndEnd().ToLower();
-                    if (Product != TEXT("rgb") && Product != TEXT("depth") && Product != TEXT("segmentation"))
+                    if (Product != TEXT("rgb"))
                     {
                         Error = FString::Printf(TEXT("camera '%s' requests unsupported capture product '%s'"), *Definition.CameraId, *Product);
                         return false;

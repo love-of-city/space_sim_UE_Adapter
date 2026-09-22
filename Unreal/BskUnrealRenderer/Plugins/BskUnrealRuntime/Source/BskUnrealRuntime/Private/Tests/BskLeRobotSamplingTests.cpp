@@ -12,8 +12,21 @@ bool FBskLeRobotSamplingTest::RunTest(const FString& Parameters)
     TestTrue(TEXT("100ms is a 10Hz sample"), BskLeRobotSample(100000000, 10.0, Tick));
     TestEqual(TEXT("global sample index"), Tick, static_cast<int64>(1));
     TestFalse(TEXT("preview/intermediate frame is not a sample"), BskLeRobotSample(33333333, 10.0, Tick));
-    TestTrue(TEXT("integration rounding"), BskLeRobotSample(100000001, 10.0, Tick));
-    TestFalse(TEXT("30Hz not exact on 2ms dynamics"), BskLeRobotSample(33333333, 30.0, Tick));
+    TestFalse(TEXT("off-grid timestamps are not relabelled"), BskLeRobotSample(100000001, 10.0, Tick));
+    TestTrue(TEXT("30Hz at physics step 8"), BskLeRobotSample(33333333, 30.0, Tick));
+    TestEqual(TEXT("first 30Hz tick"), Tick, static_cast<int64>(1));
+    TestTrue(TEXT("second 30Hz tick rounds upward"), BskLeRobotSample(66666667, 30.0, Tick));
+    TestFalse(TEXT("rounded-period accumulation rejected"), BskLeRobotSample(66666666, 30.0, Tick));
+    TestFalse(TEXT("intermediate physics step rejected"), BskLeRobotSample(37500000, 30.0, Tick));
+    for (const int64 Seconds : {0LL, 3600LL, 86400LL, 31536000LL})
+    {
+        for (int64 Index = 0; Index < 30; ++Index)
+        {
+            const int64 Stamp = Seconds * 1000000000LL + (Index * 1000000000LL + 15) / 30;
+            TestTrue(TEXT("30Hz has no long-run drift"), BskLeRobotSample(Stamp, 30.0, Tick));
+            TestEqual(TEXT("long-run tick index"), Tick, Seconds * 30 + Index);
+        }
+    }
     TestFalse(TEXT("24Hz cannot be sampled uniformly from 30Hz"), BskLeRobotSample(1000000000, 24.0, Tick));
     TestFalse(TEXT("fractional FPS is unsupported"), BskLeRobotSample(1000000000, 9.5, Tick));
     TestFalse(TEXT("negative time"), BskLeRobotSample(-1, 10.0, Tick));

@@ -66,3 +66,11 @@ venv/
 *.userprefs
 .DS_Store
 Thumbs.db
+
+# Textures.com PBR0110 is account-licensed, not a redistributable CC0 asset.
+/Unreal/BskUnrealRenderer/ContentSource/PBR0110/maps/
+/Unreal/BskUnrealRenderer/Content/BSK/Materials/PBR0110/
+/Unreal/BskUnrealRenderer/Content/BSK/VisualOverlays/SarmMLI_PBR0110/
+# Continuous wrap geometry is regenerated from the fitting recipe.
+/Unreal/BskUnrealRenderer/ContentSource/PBR0110/Continuous/*.obj
+/Unreal/BskUnrealRenderer/ContentSource/PBR0110/Continuous/*.mtl

@@ -146,7 +146,7 @@ and the headlight diffuse/ambient/specular RGB triples.
     "picture_in_picture": true,
     "capture_rate_hz": 15.0,
     "picture_in_picture_slot": 2,
-    "capture_products": ["rgb", "depth", "segmentation"]
+    "capture_products": ["rgb"]
   }],
   "settings": {"origin_object_id": "primary/hub"}
 }
@@ -177,8 +177,8 @@ to one on every manifest, including after a zero-light scene. The receiver
 rejects strings, booleans, nulls and out-of-range values. Update/rebuild the UE
 runtime to use this additive version-2 setting; older receivers ignore it.
 
-`capture_products` is strict: the only version-2 values are `rgb`, `depth`,
-and `segmentation`; an unknown value rejects the manifest with a clear error.
+`capture_products` is strict: this implementation supports only `rgb`.
+Depth, segmentation and unknown values reject the manifest with a clear error.
 The sender requests products, while the UE host retains authority over local
 disk paths and capture-network destinations.
 
@@ -288,13 +288,12 @@ packets. Replay therefore exercises the same parser and scene application path
 as live TCP.
 
 `IBskMessageSource` permits future UDP and binary transports. The built-in
-`IBskCaptureProvider` produces RGB PNG, camera-Z depth as little-endian float32
-PFM in metres, and 24-bit instance segmentation PNG. Instance ID zero is
-background; metadata maps every nonzero ID to `object_id` and
-`semantic_label`.
+`IBskCaptureProvider` produces only RGB PNG for authoritative captures (JPEG
+for previews). Depth and segmentation capture are no longer supported.
 
-Camera products use a separate `bsk-capture/1` connection so image traffic can
-never back-pressure BSK state input. Each packet is:
+Camera products use a separate `bsk-capture/1` connection. Authoritative capture
+uses bounded FIFO queues and backpressure: rendering/state publication can slow
+when the receiver or disk cannot keep up. Preview is independent and lossy. Each packet is:
 
 1. big-endian uint32 payload length;
 2. big-endian uint32 metadata JSON length;
@@ -310,8 +309,10 @@ origin (`origin_N_m`, `c_LN`) used for the frame. Camera axes remain `+X`
 forward, `+Y` left, `+Z` up. Product blob offsets are relative to the blob-area
 start and all byte lengths are decimal strings.
 
-Network and disk output retain only the newest complete packet per camera while
-their worker is behind. Disk writes run on a dedicated background thread. Render-target
+Authoritative network output waits for a slot in its bounded queue (up to 10
+seconds) rather than skipping a frame on transient congestion. Pending reliable
+packets are retained on connection retry. Preview retains the newest packet per
+camera. Disk writes run on a dedicated background thread. Render-target
 readback is currently synchronous and should be configured at a modest rate;
 an asynchronous GPU-readback provider can replace it through the existing
 provider registry without changing the wire contract.

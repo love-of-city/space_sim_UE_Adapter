@@ -104,32 +104,47 @@ public:
 
     bool EnqueueReliable(TArray<uint8>&& Packet)
     {
+        // A transient LeRobot writer stall must slow rendering, not drop camera
+        // frames. Keep the existing bounded queue and propagate backpressure.
+        const double Deadline = FPlatformTime::Seconds() + 10.0;
+        while (!bStopRequested && FPlatformTime::Seconds() < Deadline)
         {
-            FScopeLock Lock(&PacketMutex);
-            if (PendingReliablePackets.Num() >= MaxReliablePackets) return false;
-            PendingReliablePackets.Add(MoveTemp(Packet));
+            {
+                FScopeLock Lock(&PacketMutex);
+                if (PendingReliablePackets.Num() < MaxReliablePackets)
+                {
+                    PendingReliablePackets.Add(MoveTemp(Packet));
+                    WakeEvent->Trigger();
+                    return true;
+                }
+            }
+            WakeEvent->Trigger();
+            FPlatformProcess::Sleep(0.001f);
         }
-        WakeEvent->Trigger();
-        return true;
+        return false;
     }
 
     virtual uint32 Run() override
     {
+        TArray<uint8> Packet;
+        bool bReliablePacket = false;
         while (!bStopRequested)
         {
-            TArray<uint8> Packet;
+            if (Packet.IsEmpty())
             {
                 FScopeLock Lock(&PacketMutex);
                 if (!PendingReliablePackets.IsEmpty())
                 {
                     Packet = MoveTemp(PendingReliablePackets[0]);
                     PendingReliablePackets.RemoveAt(0, 1, EAllowShrinking::No);
+                    bReliablePacket = true;
                 }
                 else if (!PendingPreviewPackets.IsEmpty())
                 {
                     auto Iterator = PendingPreviewPackets.CreateIterator();
                     Packet = MoveTemp(Iterator.Value());
                     Iterator.RemoveCurrent();
+                    bReliablePacket = false;
                 }
             }
             if (Packet.IsEmpty())
@@ -140,7 +155,13 @@ public:
             if (!EnsureConnected() || !SendAll(Packet))
             {
                 CloseSocket();
+                // Retain authoritative packets across connection startup/retry.
+                // Preview remains intentionally lossy and latest-wins.
+                if (!bReliablePacket) Packet.Reset();
+                FPlatformProcess::Sleep(0.1f);
+                continue;
             }
+            Packet.Reset();
         }
         CloseSocket();
         return 0;
@@ -363,23 +384,6 @@ bool CompressJpeg(const TArray<FColor>& Pixels, int32 Width, int32 Height, int32
     return true;
 }
 
-void EncodePfmDepth(const TArray<FLinearColor>& Pixels, int32 Width, int32 Height, TArray<uint8>& OutBytes)
-{
-    const FString Header = FString::Printf(TEXT("Pf\n%d %d\n-1.0\n"), Width, Height);
-    FTCHARToUTF8 Utf8(*Header);
-    OutBytes.Append(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
-    OutBytes.Reserve(OutBytes.Num() + Width * Height * sizeof(float));
-    for (int32 Y = Height - 1; Y >= 0; --Y)
-    {
-        for (int32 X = 0; X < Width; ++X)
-        {
-            float DepthMeters = Pixels[Y * Width + X].R * 0.01f;
-            if (!FMath::IsFinite(DepthMeters) || DepthMeters < 0.0f) DepthMeters = 0.0f;
-            const uint8* Raw = reinterpret_cast<const uint8*>(&DepthMeters);
-            OutBytes.Append(Raw, sizeof(float));
-        }
-    }
-}
 
 TArray<TSharedPtr<FJsonValue>> JsonVector(const FVector3d& Value)
 {
@@ -1135,7 +1139,7 @@ void ABskSceneController::ConfigureCaptureOutput()
     }
     const auto IsKnownProduct = [](const FString& Product)
     {
-        return Product == TEXT("rgb") || Product == TEXT("depth") || Product == TEXT("segmentation");
+        return Product == TEXT("rgb");
     };
     for (const FString& Product : CaptureProductOverride)
     {
@@ -1796,8 +1800,6 @@ void ABskSceneController::ResetPresentationState()
         }
     };
     CutCaptures(CameraCaptureComponents);
-    CutCaptures(CameraDepthCaptureComponents);
-    CutCaptures(CameraSegmentationCaptureComponents);
     CutCaptures(PixelStreamingCameraCaptures);
 }
 
@@ -2450,8 +2452,6 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
         for (const FString& Product : Products)
         {
             if (Product == TEXT("rgb")) Request.Channels.Add(EBskCaptureChannel::Rgb);
-            else if (Product == TEXT("depth")) Request.Channels.Add(EBskCaptureChannel::Depth);
-            else if (Product == TEXT("segmentation")) Request.Channels.Add(EBskCaptureChannel::SemanticSegmentation);
         }
         FString Error;
         if (!RenderSubsystem->RequestCapture(Request, Error))
@@ -2531,7 +2531,6 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
     };
 
     TArray<FCapturedDataProduct> Products;
-    TArray<TSharedPtr<FJsonValue>> SegmentationLabels;
     for (const EBskCaptureChannel Channel : Request.Channels)
     {
         if (Channel == EBskCaptureChannel::Rgb)
@@ -2568,107 +2567,10 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
             }
             Products.Add(MoveTemp(Product));
         }
-        else if (Channel == EBskCaptureChannel::Depth)
+        else
         {
-            USceneCaptureComponent2D* Capture = EnsureCapture(
-                CameraDepthCaptureComponents, CameraDepthRenderTargets, TEXT("BskDepthCapture"),
-                ETextureRenderTargetFormat::RTF_R32f, ESceneCaptureSource::SCS_SceneDepth);
-            if (!Capture || !Capture->TextureTarget)
-            {
-                OutError = TEXT("could not create depth capture resources");
-                return false;
-            }
-            Capture->CaptureScene();
-            TArray<FLinearColor> Pixels;
-            if (!Capture->TextureTarget->GameThread_GetRenderTargetResource()->ReadLinearColorPixels(Pixels) || Pixels.Num() != Resolution.X * Resolution.Y)
-            {
-                OutError = TEXT("depth render-target readback failed");
-                return false;
-            }
-            FCapturedDataProduct Product{TEXT("depth"), TEXT("pfm/float32/metres/camera_z"), TEXT("pfm")};
-            EncodePfmDepth(Pixels, Resolution.X, Resolution.Y, Product.Bytes);
-            Products.Add(MoveTemp(Product));
-        }
-        else if (Channel == EBskCaptureChannel::SemanticSegmentation)
-        {
-            USceneCaptureComponent2D* Capture = EnsureCapture(
-                CameraSegmentationCaptureComponents, CameraSegmentationRenderTargets, TEXT("BskSegmentationCapture"),
-                ETextureRenderTargetFormat::RTF_R32f, ESceneCaptureSource::SCS_SceneDepth);
-            if (!Capture || !Capture->TextureTarget)
-            {
-                OutError = TEXT("could not create segmentation capture resources");
-                return false;
-            }
-            Capture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_UseShowOnlyList;
-            Capture->ClearShowOnlyComponents();
-            Capture->CaptureScene();
-            TArray<FLinearColor> BackgroundDepth;
-            if (!Capture->TextureTarget->GameThread_GetRenderTargetResource()->ReadLinearColorPixels(BackgroundDepth) ||
-                BackgroundDepth.Num() != Resolution.X * Resolution.Y)
-            {
-                Capture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
-                OutError = TEXT("segmentation background-depth readback failed");
-                return false;
-            }
-            TArray<FColor> Pixels;
-            Pixels.Init(FColor::Black, Resolution.X * Resolution.Y);
-            TArray<float> WinningDepth;
-            WinningDepth.Init(TNumericLimits<float>::Max(), Resolution.X * Resolution.Y);
-            TArray<FString> ObjectIds;
-            BoundActors.GetKeys(ObjectIds);
-            ObjectIds.Sort();
-            int32 InstanceId = 1;
-            for (const FString& ObjectId : ObjectIds)
-            {
-                if (InstanceId > 0x00ffffff) break;
-                AActor* ObjectActor = BoundActors.FindRef(ObjectId);
-                if (!ObjectActor) continue;
-                Capture->ClearShowOnlyComponents();
-                Capture->ShowOnlyActorComponents(ObjectActor, true);
-                Capture->CaptureScene();
-                TArray<FLinearColor> ObjectDepth;
-                if (!Capture->TextureTarget->GameThread_GetRenderTargetResource()->ReadLinearColorPixels(ObjectDepth) ||
-                    ObjectDepth.Num() != Resolution.X * Resolution.Y)
-                {
-                    Capture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
-                    Capture->ClearShowOnlyComponents();
-                    OutError = FString::Printf(TEXT("segmentation depth readback failed for '%s'"), *ObjectId);
-                    return false;
-                }
-                const FColor IdColor(
-                    static_cast<uint8>(InstanceId & 0xff),
-                    static_cast<uint8>((InstanceId >> 8) & 0xff),
-                    static_cast<uint8>((InstanceId >> 16) & 0xff), 255);
-                for (int32 PixelIndex = 0; PixelIndex < ObjectDepth.Num(); ++PixelIndex)
-                {
-                    const float Depth = ObjectDepth[PixelIndex].R;
-                    const float Background = BackgroundDepth[PixelIndex].R;
-                    const float Separation = FMath::Max(1.0f, FMath::Abs(Background) * 1.0e-5f);
-                    if (FMath::IsFinite(Depth) && Depth >= 0.0f && Depth + Separation < Background && Depth < WinningDepth[PixelIndex])
-                    {
-                        WinningDepth[PixelIndex] = Depth;
-                        Pixels[PixelIndex] = IdColor;
-                    }
-                }
-                TSharedPtr<FJsonObject> Label = MakeShared<FJsonObject>();
-                Label->SetNumberField(TEXT("instance_id"), InstanceId);
-                Label->SetStringField(TEXT("object_id"), ObjectId);
-                if (const FBskObjectDefinition* ObjectDefinition = ManifestObjects.Find(ObjectId))
-                {
-                    Label->SetStringField(TEXT("semantic_label"), ObjectDefinition->SemanticLabel);
-                }
-                SegmentationLabels.Add(MakeShared<FJsonValueObject>(Label));
-                ++InstanceId;
-            }
-            Capture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_RenderScenePrimitives;
-            Capture->ClearShowOnlyComponents();
-            FCapturedDataProduct Product{TEXT("segmentation"), TEXT("png/rgb24/instance_id_little_endian"), TEXT("png")};
-            if (!CompressPng(Pixels, Resolution.X, Resolution.Y, Product.Bytes))
-            {
-                OutError = TEXT("segmentation PNG encoding failed");
-                return false;
-            }
-            Products.Add(MoveTemp(Product));
+            OutError = TEXT("only RGB capture is supported");
+            return false;
         }
     }
 
@@ -2763,8 +2665,6 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
     FloatingOrigin->SetArrayField(TEXT("origin_N_m"), JsonVector(OriginInertialMeters));
     FloatingOrigin->SetArrayField(TEXT("c_LN"), JsonMatrix3(LocalFromInertialMatrix));
     Metadata->SetObjectField(TEXT("floating_origin"), FloatingOrigin);
-    Metadata->SetArrayField(TEXT("segmentation_labels"), SegmentationLabels);
-    Metadata->SetNumberField(TEXT("depth_invalid_value_m"), 0.0);
 
     TArray<TSharedPtr<FJsonValue>> ProductMetadata;
     uint64 BlobOffset = 0;
@@ -2812,7 +2712,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         {
             if (!CaptureNetworkSender->EnqueueReliable(MoveTemp(Packet)))
             {
-                OutError = TEXT("authoritative capture network queue is full; frame was not silently replaced");
+                OutError = TEXT("timed out waiting for authoritative capture network queue; check receiver connectivity / disk throughput");
                 return false;
             }
         }

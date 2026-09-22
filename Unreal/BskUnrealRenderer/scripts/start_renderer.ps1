@@ -30,15 +30,30 @@ param(
     [ValidateRange(0, 65535)]
     [int]$CaptureNetworkPort = 0,
     [string]$AutoCommand = '',
+    [string]$DerivedDataCachePath = '',
     [switch]$Foreground
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 $ue = Resolve-UnrealRoot $UnrealRoot
 $editor = Join-Path $ue 'Engine\Binaries\Win64\UnrealEditor.exe'
+# The installed graph normally relies on Zen and marks its filesystem node
+# DeleteOnly. Our project config makes Local writable as a persistent fallback.
+# Keep Zen enabled so existing cached shaders/assets do not need recompilation.
+if (!$DerivedDataCachePath) { $DerivedDataCachePath = Join-Path $ProjectRoot 'Saved\DerivedDataCache' }
+$DerivedDataCachePath = [IO.Path]::GetFullPath($DerivedDataCachePath)
+New-Item -ItemType Directory -Path $DerivedDataCachePath -Force | Out-Null
+$probe = Join-Path $DerivedDataCachePath ('.write-probe-' + [Guid]::NewGuid().ToString('N'))
+try {
+    [IO.File]::WriteAllText($probe, 'writable')
+} catch {
+    throw "UE derived-data cache is not writable: $DerivedDataCachePath. $($_.Exception.Message)"
+} finally {
+    if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force }
+}
 $arguments = @(
     $ProjectFile, '-game', '-windowed', "-ResX=$Width", "-ResY=$Height",
-    "-BskListen=$ListenAddress", "-BskPort=$Port", '-log'
+    "-BskListen=$ListenAddress", "-BskPort=$Port", '-log', '-DDC=InstalledDerivedDataBackendGraph'
 )
 $normalizedCaptureProducts = @()
 foreach ($item in $CaptureProducts) {
@@ -46,9 +61,17 @@ foreach ($item in $CaptureProducts) {
         if ($product.Trim()) { $normalizedCaptureProducts += $product.Trim().ToLowerInvariant() }
     }
 }
-$unsupportedCaptureProducts = @($normalizedCaptureProducts | Where-Object { $_ -notin @('rgb', 'depth', 'segmentation') })
+$unsupportedCaptureProducts = @($normalizedCaptureProducts | Where-Object { $_ -notin @('rgb') })
 if ($unsupportedCaptureProducts.Count -gt 0) {
     throw "Unsupported capture products: $($unsupportedCaptureProducts -join ', ')"
+}
+# Preview startup remains unchanged; authoritative RGB capture requires a fresh DLL.
+if ($normalizedCaptureProducts.Count -gt 0 -or $CaptureNetworkPort -gt 0 -or $CaptureDirectory) {
+    . (Join-Path $PSScriptRoot 'runtime_build.ps1')
+    Assert-BskCaptureRuntimeBuild $ProjectRoot
+    if ($CaptureRate -gt 0 -and $CaptureRate -notin @(1, 2, 5, 10, 30)) {
+        throw 'LeRobot capture rate must be 1, 2, 5, 10 or 30 Hz.'
+    }
 }
 if ($ReplayPath) {
     $resolvedReplay = [IO.Path]::GetFullPath($ReplayPath)
@@ -111,12 +134,20 @@ if ($AutoCommand) {
     $arguments += "-BskAutoCommand=$AutoCommand"
 }
 if ($Foreground) {
-    & $editor @arguments
-    exit $LASTEXITCODE
+    $previousCachePath = [Environment]::GetEnvironmentVariable('UE-LocalDataCachePath', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('UE-LocalDataCachePath', $DerivedDataCachePath, 'Process')
+        & $editor @arguments
+        $result = $LASTEXITCODE
+    } finally {
+        [Environment]::SetEnvironmentVariable('UE-LocalDataCachePath', $previousCachePath, 'Process')
+    }
+    exit $result
 }
 $saved = Join-Path $ProjectRoot 'Saved'
 New-Item -ItemType Directory -Path $saved -Force | Out-Null
-$process = Start-Process -FilePath $editor -ArgumentList $arguments -PassThru -WindowStyle Hidden
+$process = Start-Process -FilePath $editor -ArgumentList $arguments -PassThru -WindowStyle Hidden `
+    -Environment @{'UE-LocalDataCachePath' = $DerivedDataCachePath}
 Set-Content -LiteralPath (Join-Path $saved 'BskRenderer.pid') -Value $process.Id -Encoding ascii
 if ($ReplayPath) {
     Write-Output "BSK Unreal Renderer started (PID $($process.Id)), replaying $resolvedReplay at ${ReplayRate}x"

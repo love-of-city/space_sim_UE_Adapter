@@ -115,7 +115,7 @@ class CameraVisual:
 
     def to_payload(self) -> dict[str, Any]:
         products = [str(value).strip().lower() for value in self.capture_products]
-        unknown = sorted(set(products) - {"rgb", "depth", "segmentation"})
+        unknown = sorted(set(products) - {"rgb"})
         if unknown:
             raise ValueError(f"unsupported camera capture products: {', '.join(unknown)}")
         return {

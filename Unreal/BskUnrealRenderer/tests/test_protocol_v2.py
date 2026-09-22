@@ -242,7 +242,7 @@ class ProtocolV2Tests(unittest.TestCase):
                 picture_in_picture=True,
                 capture_rate_hz=12.0,
                 picture_in_picture_slot=2,
-                capture_products=("rgb", "depth", "segmentation"),
+                capture_products=("rgb",),
                 resolution=(480, 270),
             )
         )
@@ -252,10 +252,11 @@ class ProtocolV2Tests(unittest.TestCase):
         self.assertTrue(payload["picture_in_picture"])
         self.assertEqual(payload["capture_rate_hz"], 12.0)
         self.assertEqual(payload["picture_in_picture_slot"], 2)
-        self.assertEqual(payload["capture_products"], ["rgb", "depth", "segmentation"])
+        self.assertEqual(payload["capture_products"], ["rgb"])
 
-        with self.assertRaisesRegex(ValueError, "unsupported camera capture products"):
-            CameraVisual(camera_id="bad", capture_products=("optical_flow",)).to_payload()
+        for product in ("optical_flow", "depth", "segmentation"):
+            with self.subTest(product=product), self.assertRaisesRegex(ValueError, "unsupported camera capture products"):
+                CameraVisual(camera_id="bad", capture_products=("rgb", product)).to_payload()
 
     def test_allowlisted_bidirectional_command_runs_on_simulation_thread(self):
         publisher = _Publisher()
@@ -541,3 +542,28 @@ class ProtocolV2Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RationalRenderClockTests(unittest.TestCase):
+    def test_240hz_physics_produces_every_eighth_frame_without_drift(self):
+        publisher = _Publisher()
+        bridge = BasiliskRenderBridge(publisher=publisher, frame_rate_hz=30)
+        for seconds in (0, 3600, 86400, 31536000):
+            publisher.frames.clear()
+            bridge.Reset(seconds * 1_000_000_000)
+            for step in range(241):
+                now = ((seconds * 240 + step) * 1_000_000_000 + 120) // 240
+                bridge.UpdateState(now)
+                bridge.UpdateState(now)  # duplicate callback must not duplicate a sample
+            expected = [str(seconds * 1_000_000_000 + (n * 1_000_000_000 + 15) // 30)
+                        for n in range(31)]
+            self.assertEqual([frame["sim_time_ns"] for frame in publisher.frames], expected)
+            self.assertEqual(bridge.last_published_frame_id, 30)
+        bridge.close()
+
+    def test_absolute_and_legacy_period_modes_are_mutually_exclusive(self):
+        with self.assertRaises(ValueError):
+            BasiliskRenderBridge(publisher=_Publisher(), frame_rate_hz=30, frame_period_ns=33_333_333)
+        for rate in (0, -1, 30.5):
+            with self.assertRaises(ValueError):
+                BasiliskRenderBridge(publisher=_Publisher(), frame_rate_hz=rate)

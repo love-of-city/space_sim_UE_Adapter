@@ -96,7 +96,7 @@ def test_config_only_attaches_to_arm_carrying_bus():
     config=configparser.ConfigParser(strict=False);config.optionxform=str
     config.read(ROOT/'Config/DefaultGame.ini',encoding='utf-8')
     entries=dict(config['Bsk.VisualOverlays']);assert entries.pop('Enabled')=='True'
-    assert entries=={'/Game/BSK/Generated/SARM/base_link.base_link':'/Game/BSK/VisualOverlays/SarmMLI/SM_SarmMLI.SM_SarmMLI'}
+    assert entries=={'/Game/BSK/Generated/SARM/base_link.base_link':'/Game/BSK/VisualOverlays/SarmMLI_PBR0110/SM_SarmMLI_PBR0110.SM_SarmMLI_PBR0110'}
     assert 'part_001_color_00' in next(k for k in config['Bsk.MaterialOverrides'] if k.startswith('/Game/'))
 
 
