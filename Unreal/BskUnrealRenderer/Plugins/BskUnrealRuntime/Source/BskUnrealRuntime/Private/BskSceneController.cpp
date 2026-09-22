@@ -41,6 +41,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
@@ -663,6 +664,21 @@ void ABskSceneController::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     const double TickStart = bVideoDiagnostics ? FPlatformTime::Seconds() : 0.0;
     check(IsInGameThread());
+    if (MaximumStreamingFrameRate > 0)
+    {
+        IConsoleVariable* RequestedRate = IConsoleManager::Get().FindConsoleVariable(TEXT("PixelStreaming2.WebRTC.Fps"));
+        IConsoleVariable* RenderRate = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+        if (RequestedRate && RenderRate)
+        {
+            const int32 FrameRate = FMath::Clamp(RequestedRate->GetInt(), 1, MaximumStreamingFrameRate);
+            if (!FMath::IsNearlyEqual(RenderRate->GetFloat(), static_cast<float>(FrameRate)))
+            {
+                RenderRate->Set(static_cast<float>(FrameRate), ECVF_SetByConsole);
+                UE_LOG(LogBskUnreal, Display, TEXT("Streaming render frame rate changed to %d FPS (launch ceiling %d)"),
+                    FrameRate, MaximumStreamingFrameRate);
+            }
+        }
+    }
     if (Receiver)
     {
         FBskSceneManifest Manifest;
@@ -1173,6 +1189,8 @@ void ABskSceneController::ConfigureCaptureOutput()
 
 void ABskSceneController::ConfigurePixelStreamingOutput()
 {
+    if (FParse::Value(FCommandLine::Get(), TEXT("PixelStreamingWebRTCFps="), MaximumStreamingFrameRate))
+        MaximumStreamingFrameRate = FMath::Clamp(MaximumStreamingFrameRate, 1, 120);
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingURL="), PixelStreamingConnectionUrl);
     FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingBaseId="), PixelStreamingBaseId);
     bVideoDiagnostics = FParse::Param(FCommandLine::Get(), TEXT("BskVideoDiagnostics"));
@@ -2016,7 +2034,7 @@ AActor* ABskSceneController::SpawnTexturedEarth(const FString& ActorName, double
     {
         UE_LOG(LogBskUnreal, Warning, TEXT("Earth cloud material unavailable: %s"), *EarthCloudMaterialPath);
     }
-    if (!AddLayer(TEXT("EarthAtmosphereShell"), AtmosphereMaterial, EarthAtmosphereScale))
+    if (!bUseEarthSkyAtmosphere && !AddLayer(TEXT("EarthAtmosphereShell"), AtmosphereMaterial, EarthAtmosphereScale))
     {
         UE_LOG(LogBskUnreal, Warning, TEXT("Earth atmosphere-shell material unavailable: %s"), *EarthAtmosphereMaterialPath);
     }
@@ -2098,7 +2116,6 @@ AActor* ABskSceneController::SpawnCelestialBody(const FBskCelestialBodyDefinitio
             Atmosphere->TransformMode = ESkyAtmosphereTransformMode::PlanetCenterAtComponentTransform;
             Atmosphere->SetBottomRadius(static_cast<float>(Definition.EquatorialRadiusMeters / 1000.0));
             Atmosphere->SetAtmosphereHeight(100.0f);
-            Atmosphere->SetGroundAlbedo(FColor(32, 48, 70));
             Atmosphere->SetMultiScatteringFactor(1.0f);
             EarthAtmosphere->SetActorHiddenInGame(true);
             UE_LOG(LogBskUnreal, Display, TEXT("Created UE SkyAtmosphere for BSK Earth radius %.3f km"), Definition.EquatorialRadiusMeters / 1000.0);
@@ -3511,6 +3528,7 @@ void ABskSceneController::CreateEnvironment()
             Directional->SetLightSourceSoftAngle(0.0f);
             Directional->SetAtmosphereSunLight(true);
             Directional->SetAtmosphereSunLightIndex(0);
+            Directional->SetForwardShadingPriority(1);
             Directional->bPerPixelAtmosphereTransmittance = false;
             Directional->CloudScatteredLuminanceScale = FLinearColor::White;
         }

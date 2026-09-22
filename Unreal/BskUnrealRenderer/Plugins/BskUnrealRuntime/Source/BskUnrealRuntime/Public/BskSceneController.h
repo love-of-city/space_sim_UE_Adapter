@@ -316,6 +316,7 @@ private:
     int32 PixelStreamingCameraWidth = 640;
     int32 PixelStreamingCameraHeight = 360;
     double PixelStreamingCameraRateHertz = 90.0;
+    int32 MaximumStreamingFrameRate = 0;
     bool bVideoDiagnostics = false;
     bool bManagesViewportRendering = false;
     bool bPreviousDisableWorldRendering = false;

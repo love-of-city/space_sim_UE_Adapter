@@ -31,9 +31,12 @@ def test_override_targets_only_one_fixed_panel_by_exact_asset_path():
     config.read(ROOT / "Config/DefaultGame.ini", encoding="utf-8")
     entries = dict(config["Bsk.MaterialOverrides"])
     assert entries.pop("Enabled") == "True"
+    assert entries.pop("/Game/BSK/Generated/SARM/part_001_color_00.part_001_color_00") == (
+        "/Game/BSK/Materials/Foil002/MI_BskFoil002.MI_BskFoil002")
     assert entries == {
-        "/Game/BSK/Generated/SARM/part_001_color_00.part_001_color_00":
-        "/Game/BSK/Materials/Foil002/MI_BskFoil002.MI_BskFoil002"
+        f"/Game/BSK/Generated/SARM/part_{part}_color_00.part_{part}_color_00":
+        "/Game/BSK/Materials/SolarPanel/MI_BskSolarPanel.MI_BskSolarPanel"
+        for part in ("055", "056", "066", "067")
     }
 
 

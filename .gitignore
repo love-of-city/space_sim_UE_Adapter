@@ -74,3 +74,4 @@ Thumbs.db
 # Continuous wrap geometry is regenerated from the fitting recipe.
 /Unreal/BskUnrealRenderer/ContentSource/PBR0110/Continuous/*.obj
 /Unreal/BskUnrealRenderer/ContentSource/PBR0110/Continuous/*.mtl
+/Unreal/BskUnrealRenderer/Samples/PixelStreaming2/WebServers/
