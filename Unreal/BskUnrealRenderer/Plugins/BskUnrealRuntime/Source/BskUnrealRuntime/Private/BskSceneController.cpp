@@ -36,6 +36,7 @@
 #include "Animation/SkeletalMeshActor.h"
 #include "Async/Async.h"
 #include "Engine/StaticMesh.h"
+#include "AssetCompilingManager.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
@@ -105,24 +106,18 @@ public:
 
     bool EnqueueReliable(TArray<uint8>&& Packet)
     {
-        // A transient LeRobot writer stall must slow rendering, not drop camera
-        // frames. Keep the existing bounded queue and propagate backpressure.
-        const double Deadline = FPlatformTime::Seconds() + 10.0;
-        while (!bStopRequested && FPlatformTime::Seconds() < Deadline)
+        // Never block the UE game thread on the recorder/network consumer. A
+        // blocked enqueue prevents the receiver from draining authoritative
+        // render frames and eventually aborts Basilisk with a full render FIFO.
+        // Packets remain reliable and are retained in FIFO order; the capture
+        // receiver applies its own bounded backpressure at the process boundary.
+        if (bStopRequested) return false;
         {
-            {
-                FScopeLock Lock(&PacketMutex);
-                if (PendingReliablePackets.Num() < MaxReliablePackets)
-                {
-                    PendingReliablePackets.Add(MoveTemp(Packet));
-                    WakeEvent->Trigger();
-                    return true;
-                }
-            }
-            WakeEvent->Trigger();
-            FPlatformProcess::Sleep(0.001f);
+            FScopeLock Lock(&PacketMutex);
+            PendingReliablePackets.Add(MoveTemp(Packet));
         }
-        return false;
+        WakeEvent->Trigger();
+        return true;
     }
 
     virtual uint32 Run() override
@@ -182,15 +177,27 @@ private:
         if (!SocketSubsystem) return false;
         FAddressInfoResult AddressResult = SocketSubsystem->GetAddressInfo(
             *Address, nullptr, EAddressInfoFlags::Default, NAME_None, ESocketType::SOCKTYPE_Streaming);
-        if (AddressResult.Results.IsEmpty()) return false;
+        if (AddressResult.Results.IsEmpty())
+        {
+            UE_LOG(LogBskUnreal, Warning, TEXT("BSK capture output could not resolve %s:%u"), *Address, Port);
+            return false;
+        }
         TSharedPtr<FInternetAddr> InternetAddress = AddressResult.Results[0].Address;
         InternetAddress->SetPort(Port);
         Socket = SocketSubsystem->CreateSocket(NAME_Stream, TEXT("BSK capture output"), InternetAddress->GetProtocolType());
         if (!Socket || !Socket->Connect(*InternetAddress))
         {
+            static double LastConnectWarningSeconds = 0.0;
+            const double Now = FPlatformTime::Seconds();
+            if (Now - LastConnectWarningSeconds >= 5.0)
+            {
+                UE_LOG(LogBskUnreal, Warning, TEXT("BSK capture output cannot connect to %s:%u"), *Address, Port);
+                LastConnectWarningSeconds = Now;
+            }
             CloseSocket();
             return false;
         }
+        UE_LOG(LogBskUnreal, Display, TEXT("BSK capture output connected to %s:%u"), *Address, Port);
         Socket->SetNoDelay(true);
         Socket->SetSendBufferSize(16 * 1024 * 1024, SendBufferBytes);
         return true;
@@ -218,7 +225,6 @@ private:
 
     FString Address;
     uint16 Port = 0;
-    static constexpr int32 MaxReliablePackets = 16;
     FThreadSafeBool bStopRequested = false;
     FCriticalSection PacketMutex;
     TArray<TArray<uint8>> PendingReliablePackets;
@@ -475,6 +481,127 @@ const TCHAR* PrimitiveMeshPath(const FString& Shape)
     return TEXT("/Engine/BasicShapes/Cube.Cube");
 }
 
+bool PrepareStaticMeshForRuntime(UStaticMesh* Mesh, const FString& AssetPath)
+{
+    if (!Mesh) return false;
+    if (Mesh->IsCompiling())
+    {
+        TArray<UObject*> Assets;
+        Assets.Add(Mesh);
+        UE_LOG(LogBskUnreal, Display,
+            TEXT("Waiting for static mesh compilation before starting frame intake: %s"), *AssetPath);
+        FAssetCompilingManager::Get().FinishCompilationForObjects(Assets);
+    }
+    if (!Mesh->HasValidRenderData())
+    {
+        UE_LOG(LogBskUnreal, Warning,
+            TEXT("Static mesh has no valid render data after preparation: %s"), *AssetPath);
+        return false;
+    }
+    return true;
+}
+
+void PreloadConfiguredVisualOverlays()
+{
+    if (!GConfig) return;
+    bool bEnabled = false;
+    GConfig->GetBool(TEXT("Bsk.VisualOverlays"), TEXT("Enabled"), bEnabled, GGameIni);
+    if (!bEnabled) return;
+    const FConfigSection* Section = GConfig->GetSection(TEXT("Bsk.VisualOverlays"), false, GGameIni);
+    if (!Section) return;
+    for (const TPair<FName, FConfigValue>& Entry : *Section)
+    {
+        if (Entry.Key == FName(TEXT("Enabled"))) continue;
+        const FString AssetPath = Entry.Value.GetValue();
+        if (AssetPath.IsEmpty()) continue;
+        UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *AssetPath);
+        if (!Mesh)
+        {
+            UE_LOG(LogBskUnreal, Warning, TEXT("Configured visual overlay is unavailable during preload: %s"), *AssetPath);
+            continue;
+        }
+        if (PrepareStaticMeshForRuntime(Mesh, AssetPath))
+        {
+            UE_LOG(LogBskUnreal, Display, TEXT("Preloaded visual overlay before frame intake: %s"), *AssetPath);
+        }
+    }
+}
+
+void PreloadRuntimeStaticMeshes()
+{
+    // Manifest objects are created on the game thread when the first scene
+    // manifest arrives. Loading 100+ generated SARM meshes at that point can
+    // block the game thread long enough for the reliable render FIFO to fill,
+    // which makes the authoritative simulator abort before any RGB frame is
+    // captured. Resolve the packaged .uasset files before starting frame
+    // intake instead of relying only on the editor asset-registry cache.
+    const FString ContentRoot = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
+    const TArray<FString> Roots = {
+        TEXT("BSK/Generated/SARM"),
+        TEXT("BSK/VisualOverlays"),
+        TEXT("_GENERATED/Hyperlovimia")};
+
+    TSet<FString> SeenPaths;
+    TArray<UStaticMesh*> Meshes;
+    int32 CandidateCount = 0;
+    for (const FString& Root : Roots)
+    {
+        TArray<FString> Files;
+        const FString RootPath = FPaths::Combine(ContentRoot, Root);
+        IFileManager::Get().FindFilesRecursive(Files, *RootPath, TEXT("*.uasset"), true, false);
+        CandidateCount += Files.Num();
+        for (const FString& FilePath : Files)
+        {
+            FString RelativePath = FilePath;
+            if (!FPaths::MakePathRelativeTo(RelativePath, *ContentRoot)) continue;
+            RelativePath.ReplaceInline(TEXT("\\"), TEXT("/"));
+            if (!RelativePath.EndsWith(TEXT(".uasset"), ESearchCase::IgnoreCase)) continue;
+            const FString BaseName = FPaths::GetBaseFilename(RelativePath);
+            if (BaseName.StartsWith(TEXT("M_")) || BaseName.StartsWith(TEXT("MI_"))) continue;
+            RelativePath.LeftChopInline(7, EAllowShrinking::No);
+            const FString ObjectPath = FString::Printf(
+                TEXT("/Game/%s.%s"), *RelativePath, *FPaths::GetBaseFilename(RelativePath));
+            UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *ObjectPath);
+            if (!Mesh) continue;
+            const FString AssetPath = Mesh->GetPathName();
+            if (SeenPaths.Contains(AssetPath)) continue;
+            SeenPaths.Add(AssetPath);
+            Meshes.Add(Mesh);
+        }
+    }
+
+    if (Meshes.IsEmpty())
+    {
+        UE_LOG(LogBskUnreal, Warning,
+            TEXT("No runtime static meshes were found during preloading (asset candidates=%d)"),
+            CandidateCount);
+        return;
+    }
+
+    TArray<UObject*> CompilingMeshes;
+    CompilingMeshes.Reserve(Meshes.Num());
+    for (UStaticMesh* Mesh : Meshes)
+    {
+        if (Mesh && Mesh->IsCompiling()) CompilingMeshes.Add(Mesh);
+    }
+    if (!CompilingMeshes.IsEmpty())
+    {
+        UE_LOG(LogBskUnreal, Display,
+            TEXT("Waiting for %d runtime static meshes before starting frame intake (candidates=%d)"),
+            CompilingMeshes.Num(), CandidateCount);
+        FAssetCompilingManager::Get().FinishCompilationForObjects(CompilingMeshes);
+    }
+
+    int32 ReadyCount = 0;
+    for (UStaticMesh* Mesh : Meshes)
+    {
+        if (Mesh && Mesh->HasValidRenderData()) ++ReadyCount;
+    }
+    UE_LOG(LogBskUnreal, Display,
+        TEXT("Preloaded runtime static meshes before frame intake: ready=%d total=%d candidates=%d"),
+        ReadyCount, Meshes.Num(), CandidateCount);
+}
+
 void ApplyUnlitColor(UStaticMeshComponent* Component, UObject* Owner, const FLinearColor& Color)
 {
     if (!Component) return;
@@ -527,6 +654,11 @@ void AttachConfiguredVisualOverlay(UStaticMeshComponent* Parent, const FBskGeome
     if (!Mesh)
     {
         UE_LOG(LogBskUnreal, Warning, TEXT("Visual overlay missing: %s for %s; original mesh retained"), *MeshPath, *Geometry.AssetPath);
+        return;
+    }
+    if (!PrepareStaticMeshForRuntime(Mesh, MeshPath))
+    {
+        UE_LOG(LogBskUnreal, Warning, TEXT("Visual overlay is not render-ready: %s; original mesh retained"), *MeshPath);
         return;
     }
     AActor* Owner = Parent->GetOwner();
@@ -621,6 +753,12 @@ void ABskSceneController::BeginPlay()
     ConfigureCaptureOutput();
     ConfigurePixelStreamingOutput();
     CreateEnvironment();
+    // Do not start accepting authoritative simulation frames until configured
+    // visual overlays have finished async static-mesh compilation. Otherwise
+    // the first manifest/frame can stall the game thread while the Basilisk
+    // sender fills its reliable dataset queue and aborts capture.
+    PreloadRuntimeStaticMeshes();
+    PreloadConfiguredVisualOverlays();
     if (UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>())
     {
         BuiltinCaptureProvider = MakeShared<FBskBuiltinCaptureProvider>(this);
@@ -666,8 +804,12 @@ void ABskSceneController::Tick(float DeltaSeconds)
     check(IsInGameThread());
     if (MaximumStreamingFrameRate > 0)
     {
-        IConsoleVariable* RequestedRate = IConsoleManager::Get().FindConsoleVariable(TEXT("PixelStreaming2.WebRTC.Fps"));
-        IConsoleVariable* RenderRate = IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
+        // Cache the console variables; resolving them every tick adds measurable
+        // overhead at the 90-Hz preview rate and can starve the 30-Hz capture.
+        static IConsoleVariable* RequestedRate =
+            IConsoleManager::Get().FindConsoleVariable(TEXT("PixelStreaming2.WebRTC.Fps"));
+        static IConsoleVariable* RenderRate =
+            IConsoleManager::Get().FindConsoleVariable(TEXT("t.MaxFPS"));
         if (RequestedRate && RenderRate)
         {
             const int32 FrameRate = FMath::Clamp(RequestedRate->GetInt(), 1, MaximumStreamingFrameRate);
@@ -1200,6 +1342,17 @@ void ABskSceneController::ConfigurePixelStreamingOutput()
     PixelStreamingCameraWidth = FMath::Clamp(PixelStreamingCameraWidth, 160, 1920);
     PixelStreamingCameraHeight = FMath::Clamp(PixelStreamingCameraHeight, 90, 1080);
     PixelStreamingCameraRateHertz = FMath::Clamp(PixelStreamingCameraRateHertz, 1.0, 120.0);
+    if ((!CaptureOutputDirectory.IsEmpty() || CaptureNetworkSender.IsValid()) &&
+        PixelStreamingCameraRateHertz > 30.0)
+    {
+        // Dataset capture and Pixel Streaming share the same UE render thread.
+        // Keep operator previews alive, but do not render two extra 90-Hz
+        // camera passes while authoritative RGB is being captured at 30 Hz.
+        PixelStreamingCameraRateHertz = 5.0;
+        UE_LOG(LogBskUnreal, Display,
+            TEXT("Capped Pixel Streaming camera capture to %.1f Hz while authoritative capture is enabled"),
+            PixelStreamingCameraRateHertz);
+    }
 
     FString Cameras;
     if (FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameras="), Cameras))
@@ -2446,17 +2599,16 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
     if (DueCameras.IsEmpty()) return;
 
     // Snapshot capture and smooth presentation share one UE world, so apply the
-    // exact source frame only for the synchronous SceneCapture pass, then restore
-    // the presentation frame. This never writes data back to BSK/MJScene.
+    // exact source frame for the whole capture pass, then restore the
+    // presentation frame. This never writes data back to BSK/MJScene.
     ApplyFrame(AuthoritativeFrame, false);
-    for (const FString& CameraId : DueCameras)
+
+    const auto BuildCaptureRequest = [&](const FString& CameraId, const FBskCameraDefinition& Definition,
+                                         bool bRenderOnly)
     {
-        const FBskCameraDefinition* Definition = ManifestCameras.Find(CameraId);
-        if (!Definition) continue;
-        const TArray<FString>& Products = CaptureProductOverride.IsEmpty() ? Definition->CaptureProducts : CaptureProductOverride;
         FBskCaptureRequest Request;
         Request.CameraId = CameraId;
-        Request.Resolution = Definition->Resolution;
+        Request.Resolution = Definition.Resolution;
         Request.SimulationTimeNanoseconds = AuthoritativeFrame.SimulationTimeNanoseconds;
         Request.SourceWallTimeNanoseconds = AuthoritativeFrame.WallTimeNanoseconds;
         Request.FrameId = AuthoritativeFrame.FrameId;
@@ -2466,10 +2618,43 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
         Request.OutputDirectory = CaptureOutputDirectory;
         Request.bWriteToDisk = !CaptureOutputDirectory.IsEmpty();
         Request.bSendToNetwork = CaptureNetworkSender.IsValid();
+        Request.bSkipReadback = bRenderOnly;
+        Request.bReuseExistingRgbTarget = !bRenderOnly;
+        const TArray<FString>& Products = CaptureProductOverride.IsEmpty()
+            ? Definition.CaptureProducts : CaptureProductOverride;
         for (const FString& Product : Products)
         {
             if (Product == TEXT("rgb")) Request.Channels.Add(EBskCaptureChannel::Rgb);
         }
+        return Request;
+    };
+
+    // Phase 1 renders every due camera. Phase 2 then reads all render targets
+    // back together, so the game thread pays one GPU pipeline stall per dataset
+    // sample instead of one per camera. A per-camera stall measured ~15 ms,
+    // which saturated the game thread at the 30 Hz dataset rate.
+    TArray<FString> RenderedCameras;
+    for (const FString& CameraId : DueCameras)
+    {
+        const FBskCameraDefinition* Definition = ManifestCameras.Find(CameraId);
+        if (!Definition) continue;
+        FBskCaptureRequest Request = BuildCaptureRequest(CameraId, *Definition, true);
+        if (Request.Channels.IsEmpty()) continue;
+        FString Error;
+        if (!RenderSubsystem->RequestCapture(Request, Error))
+        {
+            UE_LOG(LogBskUnreal, Error, TEXT("Authoritative capture render for %s frame=%lld failed: %s"),
+                *CameraId, AuthoritativeFrame.FrameId, *Error);
+            continue;
+        }
+        RenderedCameras.Add(CameraId);
+    }
+    for (const FString& CameraId : RenderedCameras)
+    {
+        const FBskCameraDefinition* Definition = ManifestCameras.Find(CameraId);
+        if (!Definition) continue;
+        FBskCaptureRequest Request = BuildCaptureRequest(CameraId, *Definition, false);
+        if (Request.Channels.IsEmpty()) continue;
         FString Error;
         if (!RenderSubsystem->RequestCapture(Request, Error))
         {
@@ -2547,6 +2732,30 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         return Capture;
     };
 
+    if (Request.bSkipReadback)
+    {
+        // Render-only phase for one camera. The matching readback request runs
+        // only after every due camera has been rendered.
+        for (const EBskCaptureChannel Channel : Request.Channels)
+        {
+            if (Channel != EBskCaptureChannel::Rgb)
+            {
+                OutError = TEXT("only RGB capture is supported");
+                return false;
+            }
+            USceneCaptureComponent2D* Capture = EnsureCapture(
+                CameraCaptureComponents, CameraRenderTargets, TEXT("BskRgbCapture"),
+                ETextureRenderTargetFormat::RTF_RGBA8, ESceneCaptureSource::SCS_FinalColorLDR);
+            if (!Capture || !Capture->TextureTarget)
+            {
+                OutError = TEXT("could not create RGB capture resources");
+                return false;
+            }
+            Capture->CaptureScene();
+        }
+        return true;
+    }
+
     TArray<FCapturedDataProduct> Products;
     for (const EBskCaptureChannel Channel : Request.Channels)
     {
@@ -2570,16 +2779,21 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
                 return false;
             }
             const bool bPreview = Request.Purpose == EBskCapturePurpose::Preview;
+            // PNG compression on the game thread can take long enough to block
+            // the authoritative render receiver. RGB training frames do not
+            // require lossless storage, so use high-quality JPEG for both the
+            // preview and authoritative dataset paths. Pillow/LeRobot decode
+            // both formats to the same RGB tensor.
+            const int32 JpegQuality = bPreview ? 75 : 95;
             FCapturedDataProduct Product{
                 TEXT("rgb"),
-                bPreview ? TEXT("jpeg/bgra8_srgb/quality75") : TEXT("png/bgra8_srgb"),
-                bPreview ? TEXT("jpg") : TEXT("png")};
-            const bool bCompressed = bPreview
-                ? CompressJpeg(Pixels, Resolution.X, Resolution.Y, 75, Product.Bytes)
-                : CompressPng(Pixels, Resolution.X, Resolution.Y, Product.Bytes);
+                FString::Printf(TEXT("jpeg/bgra8_srgb/quality%d"), JpegQuality),
+                TEXT("jpg")};
+            const bool bCompressed = CompressJpeg(
+                Pixels, Resolution.X, Resolution.Y, JpegQuality, Product.Bytes);
             if (!bCompressed)
             {
-                OutError = bPreview ? TEXT("RGB JPEG encoding failed") : TEXT("RGB PNG encoding failed");
+                OutError = TEXT("RGB image encoding failed");
                 return false;
             }
             Products.Add(MoveTemp(Product));

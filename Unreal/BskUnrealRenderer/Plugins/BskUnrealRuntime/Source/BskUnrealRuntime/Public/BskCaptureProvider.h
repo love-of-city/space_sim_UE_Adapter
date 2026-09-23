@@ -27,6 +27,11 @@ struct BSKUNREALRUNTIME_API FBskCaptureRequest
     FMatrix44d LocalFromInertial = FMatrix44d::Identity;
     EBskCapturePurpose Purpose = EBskCapturePurpose::AuthoritativeDataset;
     bool bReuseExistingRgbTarget = false;
+    // Render-only phase: run the SceneCapture pass but skip the synchronous
+    // GPU readback. Every due camera is rendered first and all render targets
+    // are then read back together, so the game thread pays a single render
+    // pipeline stall per dataset sample instead of one per camera.
+    bool bSkipReadback = false;
     FString OutputDirectory;
     bool bWriteToDisk = true;
     bool bSendToNetwork = false;
