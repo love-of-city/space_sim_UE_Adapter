@@ -1,6 +1,6 @@
 # BSK → Unreal Engine 可视化适配器
 
-团队开发请先阅读[贡献指南](CONTRIBUTING.md)、[环境与兼容记录](docs/COMPATIBILITY.md)和[GitHub 保护规则](docs/REPOSITORY_SETTINGS.md)。基础 CI 不替代完整仿真、UE 和采集验收。
+团队开发请先阅读[贡献指南](CONTRIBUTING.md)。基础 CI 不替代完整仿真、UE 和采集验收。
 
 Basilisk/MJScene 状态发送端与 UE 5.6 渲染接收端。动力学由仿真端推进，UE 负责渲染与相机采集，协议为 `bsk-render/2`。
 
