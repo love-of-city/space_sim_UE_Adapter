@@ -1,0 +1,8 @@
+{
+  "files": {
+    "Unreal/BskUnrealRenderer/tests/test_ur5e_motion.py": "Basilisk UR5e scenario import",
+    "Unreal/BskUnrealRenderer/tests/test_basilisk_devices.py": "Real Basilisk devices/messages",
+    "Unreal/BskUnrealRenderer/tests/test_protocol_v2.py": "Real Basilisk message/bridge integration (basic wire tests run separately)"
+  },
+  "nodes": {}
+}
