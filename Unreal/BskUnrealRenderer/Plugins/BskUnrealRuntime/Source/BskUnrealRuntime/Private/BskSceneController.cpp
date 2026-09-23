@@ -104,16 +104,23 @@ public:
         WakeEvent->Trigger();
     }
 
+    bool HasReliableCapacity(int32 PacketCount, uint64 ByteBudget)
+    {
+        FScopeLock Lock(&PacketMutex);
+        return !bStopRequested && OutstandingReliablePackets + PacketCount <= MaxReliablePackets
+            && OutstandingReliableBytes + ByteBudget <= MaxReliableBytes;
+    }
+
     bool EnqueueReliable(TArray<uint8>&& Packet)
     {
-        // Never block the UE game thread on the recorder/network consumer. A
-        // blocked enqueue prevents the receiver from draining authoritative
-        // render frames and eventually aborts Basilisk with a full render FIFO.
-        // Packets remain reliable and are retained in FIFO order; the capture
-        // receiver applies its own bounded backpressure at the process boundary.
-        if (bStopRequested) return false;
+        // Admission is checked before consuming a render frame. Never wait for
+        // the network on the game thread, and never build an unbounded FIFO.
         {
             FScopeLock Lock(&PacketMutex);
+            if (bStopRequested || OutstandingReliablePackets >= MaxReliablePackets
+                || OutstandingReliableBytes + Packet.Num() > MaxReliableBytes) return false;
+            ++OutstandingReliablePackets;
+            OutstandingReliableBytes += Packet.Num();
             PendingReliablePackets.Add(MoveTemp(Packet));
         }
         WakeEvent->Trigger();
@@ -148,7 +155,7 @@ public:
                 WakeEvent->Wait(100);
                 continue;
             }
-            if (!EnsureConnected() || !SendAll(Packet))
+            if (!EnsureConnected() || !SendAll(Packet) || (bReliablePacket && !WaitForAcknowledgement()))
             {
                 CloseSocket();
                 // Retain authoritative packets across connection startup/retry.
@@ -156,6 +163,12 @@ public:
                 if (!bReliablePacket) Packet.Reset();
                 FPlatformProcess::Sleep(0.1f);
                 continue;
+            }
+            if (bReliablePacket)
+            {
+                FScopeLock Lock(&PacketMutex);
+                --OutstandingReliablePackets;
+                OutstandingReliableBytes -= Packet.Num();
             }
             Packet.Reset();
         }
@@ -203,6 +216,14 @@ private:
         return true;
     }
 
+    bool WaitForAcknowledgement()
+    {
+        if (!Socket || !Socket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromSeconds(5.0))) return false;
+        uint8 Ack = 0;
+        int32 Received = 0;
+        return Socket->Recv(&Ack, 1, Received) && Received == 1 && Ack == 1;
+    }
+
     bool SendAll(const TArray<uint8>& Packet)
     {
         int32 Offset = 0;
@@ -227,6 +248,10 @@ private:
     uint16 Port = 0;
     FThreadSafeBool bStopRequested = false;
     FCriticalSection PacketMutex;
+    static constexpr int32 MaxReliablePackets = 128;
+    static constexpr uint64 MaxReliableBytes = 256ull * 1024 * 1024;
+    int32 OutstandingReliablePackets = 0;
+    uint64 OutstandingReliableBytes = 0;
     TArray<TArray<uint8>> PendingReliablePackets;
     TMap<FString, TArray<uint8>> PendingPreviewPackets;
     FEvent* WakeEvent = nullptr;
@@ -828,7 +853,17 @@ void ABskSceneController::Tick(float DeltaSeconds)
         FBskRenderEvent Event;
         while (Receiver->ConsumeEvent(Event)) ApplyEvent(Event);
         FBskRenderFrame Latest;
-        if (Receiver->ConsumeLatest(Latest))
+        uint64 CaptureBatchByteBudget = 0;
+        for (const auto& Camera : ManifestCameras)
+        {
+            CaptureBatchByteBudget += static_cast<uint64>(FMath::Clamp(Camera.Value.Resolution.X, 64, 4096))
+                * FMath::Clamp(Camera.Value.Resolution.Y, 64, 4096) * 4 + 65536;
+        }
+        const bool bCaptureHasCapacity = !CaptureNetworkSender.IsValid()
+            || CaptureNetworkSender->HasReliableCapacity(ManifestCameras.Num(), CaptureBatchByteBudget);
+        // Leave authoritative frames in the receiver FIFO until output capacity
+        // exists. This applies bounded upstream backpressure without skipping.
+        if (bCaptureHasCapacity && Receiver->ConsumeLatest(Latest))
         {
             const double NowSeconds = FPlatformTime::Seconds();
             FString RejectionReason;
@@ -2812,6 +2847,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
     Metadata->SetStringField(TEXT("type"), TEXT("camera_frame"));
     Metadata->SetStringField(TEXT("session_id"), ActiveSessionId);
     Metadata->SetStringField(TEXT("camera_id"), Request.CameraId);
+    Metadata->SetBoolField(TEXT("ack_required"), Request.Purpose == EBskCapturePurpose::AuthoritativeDataset);
     Metadata->SetStringField(TEXT("stream_kind"),
         Request.Purpose == EBskCapturePurpose::AuthoritativeDataset ? TEXT("authoritative") : TEXT("preview"));
     Metadata->SetStringField(TEXT("state_kind"),
@@ -2943,7 +2979,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         {
             if (!CaptureNetworkSender->EnqueueReliable(MoveTemp(Packet)))
             {
-                OutError = TEXT("timed out waiting for authoritative capture network queue; check receiver connectivity / disk throughput");
+                OutError = TEXT("authoritative capture admission failed; output capacity must be reserved before consuming the source frame");
                 return false;
             }
         }

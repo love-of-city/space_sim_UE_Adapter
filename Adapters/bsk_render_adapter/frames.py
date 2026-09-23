@@ -33,15 +33,24 @@ def mrp_to_dcm_b_from_n(sigma_bn: Iterable[float]) -> np.ndarray:
     ) / denominator
 
 
+_ROTATION_IDENTITY = np.eye(3)
+_ROTATION_DIAGONAL_TOLERANCE = 1e-9 + 1e-5
+_ROTATION_GRAM_TOLERANCE = 1e-9 + 1e-5 * _ROTATION_IDENTITY
+_ROTATION_IDENTITY.flags.writeable = False
+_ROTATION_GRAM_TOLERANCE.flags.writeable = False
+
+
 def dcm_to_quaternion_wxyz(matrix: Iterable[Iterable[float]]) -> np.ndarray:
     """Convert a proper active rotation matrix to a normalized quaternion."""
 
     r = np.asarray(matrix, dtype=np.float64)
     if r.shape != (3, 3) or not np.all(np.isfinite(r)):
         raise ValueError("rotation matrix must be 3x3 and finite")
-    if not np.allclose(r @ r.T, np.identity(3), atol=1e-9) or not np.isclose(
-        np.linalg.det(r), 1.0, atol=1e-9
-    ):
+    # Fixed-shape equivalent of allclose(..., atol=1e-9, rtol=1e-5).
+    # Keep BOTH orthogonality and determinant checks; avoid the general-purpose
+    # broadcasting/isclose setup for every rendered body's 3x3 matrix.
+    if (not np.all(np.abs(r @ r.T - _ROTATION_IDENTITY) <= _ROTATION_GRAM_TOLERANCE)
+            or not abs(float(np.linalg.det(r)) - 1.0) <= _ROTATION_DIAGONAL_TOLERANCE):
         raise ValueError("rotation matrix must be proper orthonormal")
     trace = float(np.trace(r))
     if trace > 0.0:
