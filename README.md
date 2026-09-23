@@ -1,5 +1,7 @@
 # BSK → Unreal Engine 可视化适配器
 
+团队开发请先阅读[贡献指南](CONTRIBUTING.md)、[环境与兼容记录](docs/COMPATIBILITY.md)和[GitHub 保护规则](docs/REPOSITORY_SETTINGS.md)。基础 CI 不替代完整仿真、UE 和采集验收。
+
 Basilisk/MJScene 状态发送端与 UE 5.6 渲染接收端。动力学由仿真端推进，UE 负责渲染与相机采集，协议为 `bsk-render/2`。
 
 | 目录 | 用途 |
@@ -13,7 +15,7 @@ Basilisk/MJScene 状态发送端与 UE 5.6 渲染接收端。动力学由仿真�
 
 ## 1. 环境与安装
 
-Windows x64、PowerShell 7、Git LFS、UE 5.6、Visual Studio 2022 C++ 游戏开发工具及 Windows SDK。图形运行需要支持 UE 的 GPU/驱动。Python 3.11+；真实仿真需匹配解释器的 Basilisk/MJScene，mock 与协议测试不依赖它。
+Windows x64、PowerShell 7、Git LFS、UE 5.6、Visual Studio 2022 C++ 游戏开发工具及 Windows SDK。图形运行需要支持 UE 的 GPU/驱动。Python 3.11+；真实仿真需匹配解释器且具备所需 API 的 Basilisk/MJScene。可用 `uv pip install --python $env:SPACE_SIM_PYTHON "bsk[all]"` 安装，源码编译只是可选方式，不限定源码版本。安装后运行 `& $env:SPACE_SIM_PYTHON scripts/check_basilisk.py`。mock 与基础线协议测试不依赖 Basilisk，桥接及真实设备协议测试仍需 Basilisk。
 
 所有命令从**本仓库根目录**执行。可复用服务端的仿真环境。
 

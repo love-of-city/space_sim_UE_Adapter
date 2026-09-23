@@ -69,3 +69,4 @@ Thumbs.db
 
 # PBR0110 source and runtime assets are tracked; preserve source license notices.
 /Unreal/BskUnrealRenderer/Samples/PixelStreaming2/WebServers/
+/reports/
