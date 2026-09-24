@@ -741,4 +741,55 @@ bool FBskReceiverResetTest::RunTest(const FString& Parameters)
     return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FBskOnDemandCaptureTest,
+    "BskUnreal.Capture.OnDemandBoundaries",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBskOnDemandCaptureTest::RunTest(const FString& Parameters)
+{
+    // Even a capture-capable receiver starts latest-wins for explicitly idle frames.
+    FBskTcpReceiver Receiver(TEXT("127.0.0.1"), 0, BskProtocol::DefaultMaxPacketBytes, true);
+    const auto Publish = [&](int64 Id, const FString& Episode)
+    {
+        FBskRenderFrame Frame;
+        Frame.FrameId = Id;
+        Frame.bCaptureOnDemand = true;
+        Frame.CaptureEpisodeId = Episode;
+        Receiver.PublishLatest(MoveTemp(Frame));
+    };
+    FBskRenderFrame Frame;
+    Publish(0, TEXT(""));
+    Publish(1, TEXT(""));
+    TestEqual(TEXT("idle frames do not fill strict FIFO"), Receiver.ReliableFrames.Num(), 0);
+    TestTrue(TEXT("preview does not wait for image queue capacity"), Receiver.ConsumeForCapture(Frame, false));
+    TestEqual(TEXT("latest preview wins"), Frame.FrameId, int64(1));
+    Publish(2, TEXT(""));
+    Publish(3, TEXT("episode-A"));
+    Publish(4, TEXT("episode-A"));
+    Publish(5, TEXT("")); // STOP must not clear accepted strict frames.
+    Publish(6, TEXT(""));
+    TestFalse(TEXT("strict frames wait for capture capacity"), Receiver.ConsumeForCapture(Frame, false));
+    TestTrue(TEXT("first strict frame retained"), Receiver.ConsumeForCapture(Frame, true));
+    TestEqual(TEXT("start boundary"), Frame.FrameId, int64(3));
+    TestEqual(TEXT("episode propagated"), Frame.CaptureEpisodeId, FString(TEXT("episode-A")));
+    TestTrue(TEXT("second strict frame retained"), Receiver.ConsumeForCapture(Frame, true));
+    TestEqual(TEXT("strict FIFO ordering"), Frame.FrameId, int64(4));
+    TestTrue(TEXT("returns to live preview after draining"), Receiver.ConsumeForCapture(Frame, false));
+    TestEqual(TEXT("post-stop preview is latest"), Frame.FrameId, int64(6));
+    TestFalse(TEXT("no stale preview remains"), Receiver.ConsumeLatest(Frame));
+
+    FBskFrameParser Parser;
+    TArray<FBskRenderMessage> Messages;
+    FString Error;
+    const TArray<uint8> Packet = EncodePacket(TEXT("{\"protocol\":\"bsk-render/2\",\"type\":\"frame\",\"frame_id\":\"9\",\"sim_time_ns\":\"0\",\"capture_episode_id\":\"episode-B\",\"origin_N_m\":[0,0,0],\"objects\":[]}"));
+    TestTrue(*Error, Parser.AppendMessages(Packet.GetData(), Packet.Num(), Messages, Error));
+    if (TestEqual(TEXT("one tagged frame parsed"), Messages.Num(), 1))
+    {
+        TestTrue(TEXT("on-demand marker parsed"), Messages[0].Frame.bCaptureOnDemand);
+        TestEqual(TEXT("episode parsed"), Messages[0].Frame.CaptureEpisodeId, FString(TEXT("episode-B")));
+    }
+    return true;
+}
+
 #endif

@@ -23,14 +23,14 @@ struct BSKUNREALRUNTIME_API FBskCaptureRequest
     int64 SimulationTimeNanoseconds = 0;
     int64 SourceWallTimeNanoseconds = 0;
     int64 FrameId = -1;
+    FString CaptureEpisodeId;
     FVector3d OriginInertialMeters = FVector3d::ZeroVector;
     FMatrix44d LocalFromInertial = FMatrix44d::Identity;
     EBskCapturePurpose Purpose = EBskCapturePurpose::AuthoritativeDataset;
     bool bReuseExistingRgbTarget = false;
     // Render-only phase: run the SceneCapture pass but skip the synchronous
-    // GPU readback. Every due camera is rendered first and all render targets
-    // are then read back together, so the game thread pays a single render
-    // pipeline stall per dataset sample instead of one per camera.
+    // GPU readback. Submit every due camera first, then read each render target.
+    // ReadPixels remains synchronous; this is not an asynchronous readback API.
     bool bSkipReadback = false;
     FString OutputDirectory;
     bool bWriteToDisk = true;

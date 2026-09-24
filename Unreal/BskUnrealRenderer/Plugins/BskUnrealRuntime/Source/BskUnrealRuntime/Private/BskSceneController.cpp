@@ -863,7 +863,7 @@ void ABskSceneController::Tick(float DeltaSeconds)
             || CaptureNetworkSender->HasReliableCapacity(ManifestCameras.Num(), CaptureBatchByteBudget);
         // Leave authoritative frames in the receiver FIFO until output capacity
         // exists. This applies bounded upstream backpressure without skipping.
-        if (bCaptureHasCapacity && Receiver->ConsumeLatest(Latest))
+        if (Receiver->ConsumeForCapture(Latest, bCaptureHasCapacity))
         {
             const double NowSeconds = FPlatformTime::Seconds();
             FString RejectionReason;
@@ -876,6 +876,16 @@ void ABskSceneController::Tick(float DeltaSeconds)
             {
                 // Dataset products are rendered from the exact received frame before
                 // presentation interpolation/extrapolation is allowed to touch it.
+                const bool bCaptureActive = (!Latest.bCaptureOnDemand || !Latest.CaptureEpisodeId.IsEmpty())
+                    && (!CaptureOutputDirectory.IsEmpty() || CaptureNetworkSender.IsValid());
+                const double PreviewRate = bCaptureActive && RequestedPixelStreamingCameraRateHertz > 30.0
+                    ? 5.0 : RequestedPixelStreamingCameraRateHertz;
+                if (PixelStreamingCameraRateHertz != PreviewRate)
+                {
+                    PixelStreamingCameraRateHertz = PreviewRate;
+                    UE_LOG(LogBskUnreal, Display, TEXT("Camera preview %.1f Hz; strict capture %s episode=%s"),
+                        PreviewRate, bCaptureActive ? TEXT("on") : TEXT("off"), *Latest.CaptureEpisodeId);
+                }
                 UpdateAuthoritativeDataProductCaptures(Latest);
                 if (TimeMode.Equals(TEXT("latest"), ESearchCase::IgnoreCase) || !bHasTargetFrame)
                 {
@@ -1377,17 +1387,7 @@ void ABskSceneController::ConfigurePixelStreamingOutput()
     PixelStreamingCameraWidth = FMath::Clamp(PixelStreamingCameraWidth, 160, 1920);
     PixelStreamingCameraHeight = FMath::Clamp(PixelStreamingCameraHeight, 90, 1080);
     PixelStreamingCameraRateHertz = FMath::Clamp(PixelStreamingCameraRateHertz, 1.0, 120.0);
-    if ((!CaptureOutputDirectory.IsEmpty() || CaptureNetworkSender.IsValid()) &&
-        PixelStreamingCameraRateHertz > 30.0)
-    {
-        // Dataset capture and Pixel Streaming share the same UE render thread.
-        // Keep operator previews alive, but do not render two extra 90-Hz
-        // camera passes while authoritative RGB is being captured at 30 Hz.
-        PixelStreamingCameraRateHertz = 5.0;
-        UE_LOG(LogBskUnreal, Display,
-            TEXT("Capped Pixel Streaming camera capture to %.1f Hz while authoritative capture is enabled"),
-            PixelStreamingCameraRateHertz);
-    }
+    RequestedPixelStreamingCameraRateHertz = PixelStreamingCameraRateHertz;
 
     FString Cameras;
     if (FParse::Value(FCommandLine::Get(), TEXT("BskPixelStreamingCameras="), Cameras))
@@ -2616,6 +2616,8 @@ void ABskSceneController::UpdatePictureInPictureCaptures()
 
 void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRenderFrame& AuthoritativeFrame)
 {
+    // Capability alone never triggers dataset readback; only tagged active frames do.
+    if (AuthoritativeFrame.bCaptureOnDemand && AuthoritativeFrame.CaptureEpisodeId.IsEmpty()) return;
     if (!GetWorld() || (CaptureOutputDirectory.IsEmpty() && !CaptureNetworkSender)) return;
     UBskRenderWorldSubsystem* RenderSubsystem = GetWorld()->GetSubsystem<UBskRenderWorldSubsystem>();
     if (!RenderSubsystem) return;
@@ -2647,6 +2649,7 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
         Request.SimulationTimeNanoseconds = AuthoritativeFrame.SimulationTimeNanoseconds;
         Request.SourceWallTimeNanoseconds = AuthoritativeFrame.WallTimeNanoseconds;
         Request.FrameId = AuthoritativeFrame.FrameId;
+        Request.CaptureEpisodeId = AuthoritativeFrame.CaptureEpisodeId;
         Request.OriginInertialMeters = AuthoritativeFrame.OriginInertialMeters;
         Request.LocalFromInertial = AuthoritativeFrame.LocalFromInertial;
         Request.Purpose = EBskCapturePurpose::AuthoritativeDataset;
@@ -2664,10 +2667,8 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
         return Request;
     };
 
-    // Phase 1 renders every due camera. Phase 2 then reads all render targets
-    // back together, so the game thread pays one GPU pipeline stall per dataset
-    // sample instead of one per camera. A per-camera stall measured ~15 ms,
-    // which saturated the game thread at the 30 Hz dataset rate.
+    // Submit every due camera before reading them individually. This avoids
+    // alternating render/readback submissions but ReadPixels is still synchronous.
     TArray<FString> RenderedCameras;
     for (const FString& CameraId : DueCameras)
     {
@@ -2817,8 +2818,8 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
             // PNG compression on the game thread can take long enough to block
             // the authoritative render receiver. RGB training frames do not
             // require lossless storage, so use high-quality JPEG for both the
-            // preview and authoritative dataset paths. Pillow/LeRobot decode
-            // both formats to the same RGB tensor.
+            // preview and authoritative dataset paths. JPEG is lossy; decoding
+            // produces an RGB tensor, not pixel-identical lossless RGB.
             const int32 JpegQuality = bPreview ? 75 : 95;
             FCapturedDataProduct Product{
                 TEXT("rgb"),
@@ -2847,6 +2848,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
     Metadata->SetStringField(TEXT("type"), TEXT("camera_frame"));
     Metadata->SetStringField(TEXT("session_id"), ActiveSessionId);
     Metadata->SetStringField(TEXT("camera_id"), Request.CameraId);
+    Metadata->SetStringField(TEXT("capture_episode_id"), Request.CaptureEpisodeId);
     Metadata->SetBoolField(TEXT("ack_required"), Request.Purpose == EBskCapturePurpose::AuthoritativeDataset);
     Metadata->SetStringField(TEXT("stream_kind"),
         Request.Purpose == EBskCapturePurpose::AuthoritativeDataset ? TEXT("authoritative") : TEXT("preview"));

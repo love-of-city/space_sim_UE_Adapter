@@ -440,6 +440,12 @@ bool ParseFrame(const TSharedPtr<FJsonObject>& Root, FBskRenderFrame& Out, FStri
         Error = TEXT("frame_id and sim_time_ns must be integers or decimal strings");
         return false;
     }
+    Out.bCaptureOnDemand = Root->HasField(TEXT("capture_episode_id"));
+    if (Out.bCaptureOnDemand && !Root->TryGetStringField(TEXT("capture_episode_id"), Out.CaptureEpisodeId))
+    {
+        Error = TEXT("capture_episode_id must be a string (empty means preview only)");
+        return false;
+    }
     TryReadInt64(Root, TEXT("wall_time_ns"), Out.WallTimeNanoseconds);
     TryReadInt64(Root, TEXT("manifest_revision"), Out.ManifestRevision);
     if (!ReadVector3(Root, TEXT("origin_N_m"), Out.OriginInertialMeters, true, Error)) return false;

@@ -101,10 +101,16 @@ void FBskTcpReceiver::SetStatus(const FString& NewStatus)
 
 bool FBskTcpReceiver::ConsumeLatest(FBskRenderFrame& OutFrame)
 {
+    return ConsumeForCapture(OutFrame, true);
+}
+
+bool FBskTcpReceiver::ConsumeForCapture(FBskRenderFrame& OutFrame, bool bCaptureHasCapacity)
+{
     FScopeLock Lock(&LatestMutex);
-    if (bReliableFrames)
+    if (LatestManifest.IsValid()) return false;
+    if (!ReliableFrames.IsEmpty())
     {
-        if (LatestManifest.IsValid() || ReliableFrames.IsEmpty()) return false;
+        if (!bCaptureHasCapacity) return false;
         OutFrame = MoveTemp(ReliableFrames[0]);
         ReliableFrames.RemoveAt(0, 1, EAllowShrinking::No);
         return true;
@@ -113,6 +119,7 @@ bool FBskTcpReceiver::ConsumeLatest(FBskRenderFrame& OutFrame)
     {
         return false;
     }
+    if (!bCaptureHasCapacity && !LatestFrame->bCaptureOnDemand) return false;
     OutFrame = MoveTemp(*LatestFrame);
     LatestFrame.Reset();
     return true;
@@ -138,7 +145,8 @@ bool FBskTcpReceiver::ConsumeEvent(FBskRenderEvent& OutEvent)
 
 void FBskTcpReceiver::PublishLatest(FBskRenderFrame&& Frame)
 {
-    if (bReliableFrames)
+    const bool bStrict = Frame.bCaptureOnDemand ? !Frame.CaptureEpisodeId.IsEmpty() : bReliableFrames;
+    if (bStrict)
     {
         // Bounded FIFO applies TCP backpressure instead of overwriting unseen
         // authoritative frames. Release the lock while the game thread drains.
@@ -149,6 +157,12 @@ void FBskTcpReceiver::PublishLatest(FBskRenderFrame&& Frame)
                 if (!IncomingSessionId.IsEmpty() && !Frame.SessionId.IsEmpty() && Frame.SessionId != IncomingSessionId) return;
                 if (ReliableFrames.Num() < 128)
                 {
+                    // Do not display an older pre-start preview after this FIFO.
+                    if (LatestFrame.IsValid())
+                    {
+                        LatestFrame.Reset();
+                        ++OverwrittenFrameCount;
+                    }
                     ReliableFrames.Add(MoveTemp(Frame));
                     ++ReceivedFrameCount;
                     return;
