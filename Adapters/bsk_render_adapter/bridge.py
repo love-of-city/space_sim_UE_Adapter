@@ -160,6 +160,7 @@ class BasiliskRenderBridge(_BridgeBase):
         c_l_n: Iterable[Iterable[float]] | None = None,
         publisher: RenderPublisher | Any | None = None,
         reliable_frames: bool = False,
+        capture_state_provider: Callable[[], dict[str, str]] | None = None,
         recording_path: str | Path | None = None,
         frame_period_ns: int | None = None,
         frame_rate_hz: int | None = None,
@@ -177,6 +178,8 @@ class BasiliskRenderBridge(_BridgeBase):
         self.origin_object = origin_object
         self.converter = FrameConverter(c_l_n)
         self.publisher = publisher or RenderPublisher(host, port, reliable_frames=reliable_frames)
+        self.capture_state_provider = capture_state_provider
+        self.last_capture_state: dict[str, str] = {}
         self.recorder = BskRecordingWriter(recording_path) if recording_path else None
         self._objects: list[_ObjectBinding] = []
         self._celestial: list[_CelestialBinding] = []
@@ -857,7 +860,21 @@ class BasiliskRenderBridge(_BridgeBase):
             "celestial_bodies": celestial,
             "visual_states": visual_states,
         }
+        # Read the control state exactly once on the simulation thread. Its
+        # episode/request IDs accompany both this render frame and its snapshot.
+        capture_state = {}
+        if self.capture_state_provider is not None:
+            state = self.capture_state_provider()
+            # This hook can annotate capture identity, never override poses,
+            # timestamps or other authoritative frame payload fields.
+            for key, limit in (("capture_episode_id", 128), ("capture_request_id", 64)):
+                value = state.get(key, "")
+                if not isinstance(value, str) or len(value) > limit:
+                    raise ValueError(f"invalid {key}")
+                capture_state[key] = value
+        message.update(capture_state)
         self.publisher.publish_frame(message)
+        self.last_capture_state = capture_state
         if self.recorder:
             self.recorder.write(message)
         self._last_published_sim_time_ns = current_sim_ns

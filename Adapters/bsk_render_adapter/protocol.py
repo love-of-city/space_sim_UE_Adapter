@@ -117,6 +117,10 @@ class RenderPublisher:
         self.stats = PublisherStats()
         self.reliable_frames = reliable_frames
         self._latest_frame: queue.Queue[bytes] = queue.Queue(maxsize=256 if reliable_frames else 1)
+        # On-demand frames use an independent bounded FIFO. Preview replacement
+        # must never evict a strict frame accepted before a STOP transition.
+        self._strict_frames: queue.Queue[bytes] = queue.Queue(maxsize=256)
+        self._preview_frames: queue.Queue[bytes] = queue.Queue(maxsize=1)
         self._events: queue.Queue[bytes] = queue.Queue(maxsize=event_queue_size)
         self._commands: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=command_queue_size)
         self._receive_buffer = bytearray()
@@ -158,24 +162,37 @@ class RenderPublisher:
         """Queue a frame; dataset mode applies bounded backpressure, preview replaces."""
 
         packet = encode_packet(message)
-        if self.reliable_frames:
+        on_demand = "capture_episode_id" in message
+        strict = bool(message.get("capture_episode_id")) if on_demand else self.reliable_frames
+        if strict:
             self.start()
+            target = self._strict_frames if on_demand else self._latest_frame
+            if on_demand:
+                # An unsent pre-start preview is not an authoritative sample.
+                try:
+                    while True:
+                        self._preview_frames.get_nowait()
+                        self.stats.frames_dropped += 1
+                except queue.Empty:
+                    pass
             try:
-                self._latest_frame.put(packet, timeout=10.0)
+                target.put(packet, timeout=10.0)
             except queue.Full as error:
                 raise RuntimeError("authoritative render queue full; refusing to drop a dataset frame") from error
             self.stats.frames_queued += 1
             self._wake.set()
             return
+        target = self._preview_frames if on_demand else self._latest_frame
         try:
-            self._latest_frame.put_nowait(packet)
+            target.put_nowait(packet)
         except queue.Full:
             try:
-                self._latest_frame.get_nowait()
+                target.get_nowait()
             except queue.Empty:
                 pass
-            self.stats.frames_dropped += 1
-            self._latest_frame.put_nowait(packet)
+            else:
+                self.stats.frames_dropped += 1
+            target.put_nowait(packet)
         self.stats.frames_queued += 1
         self._wake.set()
         self.start()
@@ -258,6 +275,7 @@ class RenderPublisher:
         connection_generation = -1
         pending_event: bytes | None = None
         pending_frame: bytes | None = None
+        pending_frame_reliable = False
         while not self._stop.is_set():
             if connection is None:
                 try:
@@ -295,11 +313,20 @@ class RenderPublisher:
 
                 if pending_frame is None:
                     try:
-                        pending_frame = self._latest_frame.get_nowait()
-                        if not self.reliable_frames:
-                            while True:
+                        try:
+                            pending_frame = self._strict_frames.get_nowait()
+                            pending_frame_reliable = True
+                        except queue.Empty:
+                            try:
+                                pending_frame = self._preview_frames.get_nowait()
+                                pending_frame_reliable = False
+                            except queue.Empty:
                                 pending_frame = self._latest_frame.get_nowait()
-                                self.stats.frames_dropped += 1
+                                pending_frame_reliable = self.reliable_frames
+                                if not pending_frame_reliable:
+                                    while True:
+                                        pending_frame = self._latest_frame.get_nowait()
+                                        self.stats.frames_dropped += 1
                     except queue.Empty:
                         pass
                 if pending_frame is not None:
@@ -313,7 +340,9 @@ class RenderPublisher:
                 self._wake.clear()
             except (OSError, ConnectionError, ValueError, UnicodeError) as error:
                 self.stats.last_error = str(error)
-                if not self.reliable_frames:
+                if not pending_frame_reliable:
+                    if pending_frame is not None:
+                        self.stats.frames_dropped += 1
                     pending_frame = None
                 try:
                     connection.close()

@@ -19,6 +19,7 @@ public:
     virtual bool StartSource() override { return StartReceiver(); }
     virtual void StopSource() override { StopReceiver(); }
     virtual bool ConsumeLatest(FBskRenderFrame& OutFrame) override;
+    virtual bool ConsumeForCapture(FBskRenderFrame& OutFrame, bool bCaptureHasCapacity) override;
     virtual bool ConsumeLatestManifest(FBskSceneManifest& OutManifest) override;
     virtual bool ConsumeEvent(FBskRenderEvent& OutEvent) override;
     virtual bool SendCommandJson(const FString& CommandJson, FString& OutError) override;
@@ -33,6 +34,7 @@ public:
 private:
     friend class FBskReceiverResetTest;
     friend class FBskReliableFramesTest;
+    friend class FBskOnDemandCaptureTest;
     bool CreateListener();
     void CloseClient();
     void CloseSockets();

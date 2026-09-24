@@ -417,3 +417,22 @@ simulation timestamps are reused.
 
 Regression coverage: `BskUnreal.Presentation.SceneReset` and
 `BskUnreal.Protocol.ResetReceiveBarrier` (Unreal automation, supports NullRHI).
+
+
+## Optional on-demand authoritative capture
+
+Platform frames may include `capture_episode_id` and `capture_request_id`.
+An empty episode ID explicitly selects latest-wins preview with no dataset RGB
+readback/encoding/transmission. A nonempty ID selects the bounded strict FIFO and
+normal authoritative camera sampling; emitted camera metadata carries the same
+`capture_episode_id`. Missing fields retain legacy standalone/replay behavior.
+The bridge samples this state once per frame, and the platform observation echoes
+the same episode/request IDs to acknowledge the boundary. A socket send alone is
+not a capture-start acknowledgement.
+
+On STOP, reliable frames already accepted by Python or UE must drain in order;
+new preview frames occupy a separate latest-only slot. A later START cannot reuse
+old episode captures. Backend recording freezes its accepted observation cutoff
+before disabling new strict frames, and drains images for that cutoff before
+finalizing. Preview camera refresh is reduced only while strict capture is active,
+not merely because camera output was configured at scene launch.

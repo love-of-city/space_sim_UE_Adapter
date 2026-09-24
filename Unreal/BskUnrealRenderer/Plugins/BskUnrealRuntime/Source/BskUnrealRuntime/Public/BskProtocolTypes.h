@@ -199,6 +199,9 @@ struct BSKUNREALRUNTIME_API FBskRenderFrame
     FString SessionId;
     int64 ManifestRevision = 0;
     int64 FrameId = 0;
+    // Presence distinguishes on-demand peers from legacy always-capture peers.
+    bool bCaptureOnDemand = false;
+    FString CaptureEpisodeId;
     int64 SimulationTimeNanoseconds = 0;
     int64 WallTimeNanoseconds = 0;
     FVector3d OriginInertialMeters = FVector3d::ZeroVector;

@@ -11,6 +11,11 @@ public:
     virtual bool StartSource() = 0;
     virtual void StopSource() = 0;
     virtual bool ConsumeLatest(FBskRenderFrame& OutFrame) = 0;
+    // Live sources can consume previews even when strict image output is full.
+    virtual bool ConsumeForCapture(FBskRenderFrame& OutFrame, bool bCaptureHasCapacity)
+    {
+        return bCaptureHasCapacity && ConsumeLatest(OutFrame);
+    }
     virtual bool ConsumeLatestManifest(FBskSceneManifest& OutManifest) { return false; }
     virtual bool ConsumeEvent(FBskRenderEvent& OutEvent) { return false; }
     virtual bool SetPaused(bool bPaused) { return false; }
