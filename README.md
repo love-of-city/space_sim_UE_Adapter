@@ -91,7 +91,7 @@ $env:SPACE_SIM_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
 & $env:SPACE_SIM_PYTHON -c "from Basilisk.simulation import mujoco; print(mujoco.MJScene)"
 ```
 
-启动脚本只调用解释器，不要求特定环境管理器。统一优先级：`-Python` → `SPACE_SIM_PYTHON` → 已激活 venv（`VIRTUAL_ENV`）→ 已激活 Conda（`CONDA_PREFIX`）→ 仓库及父工作区 `.venv`/`venv` → PATH。选中环境无效或缺少所需模块时直接报错，不自动切换。三种方式后续均使用同一套测试和启动命令；UE 资产导入仍使用编辑器内置 Python。
+启动脚本只调用解释器，不要求特定环境管理器。统一优先级：`-Python` → `SPACE_SIM_PYTHON` → 仓库本地 `.space-sim-python` → 已激活 venv（`VIRTUAL_ENV`）→ 已激活 Conda（`CONDA_PREFIX`）→ 仓库及父工作区 `.venv`/`venv` → PATH。选中环境无效或缺少所需模块时直接报错，不自动切换。三种方式后续均使用同一套测试和启动命令；UE 资产导入仍使用编辑器内置 Python。固定解释器及 Conda DLL 加载说明见 [Python 环境选择](docs/PYTHON_RUNTIME.md)。
 
 ## 2. 构建与测试
 
