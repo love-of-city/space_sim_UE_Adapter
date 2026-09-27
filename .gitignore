@@ -57,6 +57,7 @@ htmlcov/
 build/
 dist/
 .venv/
+/.space-sim-python
 venv/
 
 # Editors and operating systems.
