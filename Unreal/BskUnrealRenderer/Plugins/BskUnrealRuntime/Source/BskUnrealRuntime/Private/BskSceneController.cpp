@@ -1434,13 +1434,19 @@ void ABskSceneController::ConfigureFixedRgbExposure(USceneCaptureComponent2D* Ca
     if (!Capture) return;
     Capture->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
     Capture->ShowFlags.SetPostProcessing(true);
-    Capture->ShowFlags.SetEyeAdaptation(false);
+    Capture->ShowFlags.SetEyeAdaptation(true);
     Capture->ShowFlags.SetTonemapper(true);
     Capture->PostProcessBlendWeight = 1.0f;
     Capture->PostProcessSettings.bOverride_AutoExposureMethod = true;
     Capture->PostProcessSettings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
     Capture->PostProcessSettings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
-    Capture->PostProcessSettings.AutoExposureApplyPhysicalCameraExposure = false;
+    Capture->PostProcessSettings.AutoExposureApplyPhysicalCameraExposure = true;
+    Capture->PostProcessSettings.bOverride_CameraISO = true;
+    Capture->PostProcessSettings.CameraISO = 100.0f;
+    Capture->PostProcessSettings.bOverride_CameraShutterSpeed = true;
+    Capture->PostProcessSettings.CameraShutterSpeed = 125.0f;
+    Capture->PostProcessSettings.bOverride_DepthOfFieldFstop = true;
+    Capture->PostProcessSettings.DepthOfFieldFstop = 16.0f;
     Capture->PostProcessSettings.bOverride_AutoExposureBias = true;
     Capture->PostProcessSettings.AutoExposureBias = static_cast<float>(MaterialExposureBias);
 }
@@ -3781,7 +3787,7 @@ void ABskSceneController::CreateEnvironment()
             Directional->SetAtmosphereSunLight(true);
             Directional->SetAtmosphereSunLightIndex(0);
             Directional->SetForwardShadingPriority(1);
-            Directional->bPerPixelAtmosphereTransmittance = false;
+            Directional->bPerPixelAtmosphereTransmittance = true;
             Directional->CloudScatteredLuminanceScale = FLinearColor::White;
         }
     }
@@ -3830,7 +3836,13 @@ void ABskSceneController::CreateEnvironment()
             Volume->Settings.bOverride_AutoExposureMethod = true;
             Volume->Settings.AutoExposureMethod = EAutoExposureMethod::AEM_Manual;
             Volume->Settings.bOverride_AutoExposureApplyPhysicalCameraExposure = true;
-            Volume->Settings.AutoExposureApplyPhysicalCameraExposure = false;
+            Volume->Settings.AutoExposureApplyPhysicalCameraExposure = true;
+            Volume->Settings.bOverride_CameraISO = true;
+            Volume->Settings.CameraISO = 100.0f;
+            Volume->Settings.bOverride_CameraShutterSpeed = true;
+            Volume->Settings.CameraShutterSpeed = 125.0f;
+            Volume->Settings.bOverride_DepthOfFieldFstop = true;
+            Volume->Settings.DepthOfFieldFstop = 16.0f;
             Volume->Settings.bOverride_AutoExposureBias = true;
             Volume->Settings.AutoExposureBias = static_cast<float>(MaterialExposureBias);
         }
