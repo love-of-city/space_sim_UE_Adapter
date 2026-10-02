@@ -28,6 +28,7 @@ public:
         return false;
     }
     virtual FString GetStatus() const = 0;
+    virtual int32 GetPendingFrameCount() const { return 0; }
 };
 
 using IBskMessageSource = IBskFrameSource;

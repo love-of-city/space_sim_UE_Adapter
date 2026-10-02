@@ -23,6 +23,8 @@ class FBskCaptureNetworkSender;
 class FBskCaptureDiskWriter;
 class FBskBuiltinCaptureProvider;
 struct FBskCaptureRequest;
+struct FBskAsyncCaptureJob;
+struct FCapturedDataProduct;
 
 struct BSKUNREALRUNTIME_API FBskPictureInPictureView
 {
@@ -166,6 +168,11 @@ private:
     FString PixelStreamingIdForCamera(const FString& CameraId) const;
     void UpdateAuthoritativeDataProductCaptures(const FBskRenderFrame& AuthoritativeFrame);
     bool CaptureCameraDataProducts(const FBskCaptureRequest& Request, FString& OutError);
+    bool WriteCaptureProducts(const FBskCaptureRequest& Request, const TSharedPtr<FJsonObject>& Metadata,
+                              const TArray<FCapturedDataProduct>& Products, int64 Sequence, FString& OutError);
+    void PollCaptureJobs();
+    void CancelCaptureJobs();
+    void ReportCaptureFailure(const FBskCaptureRequest& Request, const FString& Error);
     void ConfigureCaptureOutput();
     void ApplyVisualMountTransform(AActor* Actor, const FBskVisualDefinition& Definition) const;
     void RefreshVisualVisibility(const FString& VisualId);
@@ -327,6 +334,11 @@ private:
     TMap<FString, int32> VideoDiagnosticsCaptures;
     TArray<FString> CaptureProductOverride;
     int64 CaptureSequence = 0;
+    bool bAsyncCaptureEnabled = true;
+    static constexpr int32 MaxAsyncCaptureJobs = 16;
+    static constexpr uint64 MaxAsyncCaptureBytes = 256ull * 1024 * 1024;
+    uint64 PendingCaptureBytes = 0;
+    TArray<TSharedPtr<FBskAsyncCaptureJob, ESPMode::ThreadSafe>> PendingCaptureJobs;
     TSharedPtr<IBskCaptureProvider> BuiltinCaptureProvider;
     TSharedPtr<FBskCaptureNetworkSender> CaptureNetworkSender;
     TSharedPtr<FBskCaptureDiskWriter> CaptureDiskWriter;
