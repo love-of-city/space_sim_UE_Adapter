@@ -20,6 +20,7 @@ public:
     virtual void StopSource() override { StopReceiver(); }
     virtual bool ConsumeLatest(FBskRenderFrame& OutFrame) override;
     virtual bool ConsumeForCapture(FBskRenderFrame& OutFrame, bool bCaptureHasCapacity) override;
+    virtual int32 GetPendingFrameCount() const override;
     virtual bool ConsumeLatestManifest(FBskSceneManifest& OutManifest) override;
     virtual bool ConsumeEvent(FBskRenderEvent& OutEvent) override;
     virtual bool SendCommandJson(const FString& CommandJson, FString& OutError) override;

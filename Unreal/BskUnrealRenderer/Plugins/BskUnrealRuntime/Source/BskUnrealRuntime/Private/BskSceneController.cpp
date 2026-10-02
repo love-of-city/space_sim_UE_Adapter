@@ -65,6 +65,7 @@
 #include "PixelStreaming2Delegates.h"
 #include "VideoProducerRenderTarget.h"
 #include "RHICommandList.h"
+#include "RHIGPUReadback.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/MemoryWriter.h"
@@ -109,6 +110,12 @@ public:
         FScopeLock Lock(&PacketMutex);
         return !bStopRequested && OutstandingReliablePackets + PacketCount <= MaxReliablePackets
             && OutstandingReliableBytes + ByteBudget <= MaxReliableBytes;
+    }
+
+    int32 GetPendingPacketCount()
+    {
+        FScopeLock Lock(&PacketMutex);
+        return OutstandingReliablePackets;
     }
 
     bool EnqueueReliable(TArray<uint8>&& Packet)
@@ -213,6 +220,7 @@ private:
         UE_LOG(LogBskUnreal, Display, TEXT("BSK capture output connected to %s:%u"), *Address, Port);
         Socket->SetNoDelay(true);
         Socket->SetSendBufferSize(16 * 1024 * 1024, SendBufferBytes);
+        Socket->SetNonBlocking(true);
         return true;
     }
 
@@ -227,11 +235,20 @@ private:
     bool SendAll(const TArray<uint8>& Packet)
     {
         int32 Offset = 0;
+        double Progress = FPlatformTime::Seconds();
         while (!bStopRequested && Socket && Offset < Packet.Num())
         {
+            if (FPlatformTime::Seconds() - Progress > 5.0) return false;
+            if (!Socket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromSeconds(0.05))) continue;
             int32 Sent = 0;
-            if (!Socket->Send(Packet.GetData() + Offset, Packet.Num() - Offset, Sent) || Sent <= 0) return false;
+            if (!Socket->Send(Packet.GetData() + Offset, Packet.Num() - Offset, Sent))
+            {
+                if (ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLastErrorCode() == SE_EWOULDBLOCK) continue;
+                return false;
+            }
+            if (Sent <= 0) return false;
             Offset += Sent;
+            Progress = FPlatformTime::Seconds();
         }
         return Offset == Packet.Num();
     }
@@ -282,6 +299,26 @@ struct FCapturedDataProduct
     TArray<uint8> Bytes;
 };
 
+// All UObject/camera access and metadata snapshots stay on the game thread.
+// Workers own only pixel buffers and an independent JPEG wrapper. GPU commands
+// retain the job/readback until submission; no render target is read after reuse.
+struct FBskAsyncCaptureJob
+{
+    FBskCaptureRequest Request;
+    TSharedPtr<FJsonObject> Metadata;
+    FIntPoint Resolution;
+    int64 Sequence = 0;
+    uint64 ReservedBytes = 0;
+    double SubmittedSeconds = 0;
+    TAtomic<bool> bCopySubmitted{false};
+    bool bRgba = false;
+    TSharedPtr<FRHIGPUTextureReadback, ESPMode::ThreadSafe> Readback;
+    TSharedPtr<IImageWrapper> Wrapper;
+    TFuture<FCapturedDataProduct> Encoded;
+    TArray<FCapturedDataProduct> Products;
+    FString Error;
+};
+
 struct FBskCaptureDiskWork
 {
     FString Directory;
@@ -308,6 +345,12 @@ public:
             delete Thread;
         }
         if (WakeEvent) FPlatformProcess::ReturnSynchEventToPool(WakeEvent);
+    }
+
+    bool HasCapacity(int32 Count)
+    {
+        FScopeLock Lock(&WorkMutex);
+        return !bStopRequested && PendingWork.Num() + Count <= MaxPendingWork;
     }
 
     bool EnqueueReliable(FBskCaptureDiskWork&& Work)
@@ -801,6 +844,7 @@ void ABskSceneController::BeginPlay()
 
 void ABskSceneController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+    CancelCaptureJobs();
     ShutdownPixelStreamingCameras();
     if (BuiltinCaptureProvider && GetWorld())
     {
@@ -825,6 +869,8 @@ void ABskSceneController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void ABskSceneController::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);
+    // Drain after STOP too: accepted strict jobs retain their original episode.
+    PollCaptureJobs();
     const double TickStart = bVideoDiagnostics ? FPlatformTime::Seconds() : 0.0;
     check(IsInGameThread());
     if (MaximumStreamingFrameRate > 0)
@@ -859,8 +905,13 @@ void ABskSceneController::Tick(float DeltaSeconds)
             CaptureBatchByteBudget += static_cast<uint64>(FMath::Clamp(Camera.Value.Resolution.X, 64, 4096))
                 * FMath::Clamp(Camera.Value.Resolution.Y, 64, 4096) * 4 + 65536;
         }
-        const bool bCaptureHasCapacity = !CaptureNetworkSender.IsValid()
-            || CaptureNetworkSender->HasReliableCapacity(ManifestCameras.Num(), CaptureBatchByteBudget);
+        const int32 ReservedPackets = PendingCaptureJobs.Num() + ManifestCameras.Num();
+        const uint64 ReservedBytes = PendingCaptureBytes + CaptureBatchByteBudget;
+        const bool bCaptureHasCapacity = ReservedPackets <= MaxAsyncCaptureJobs
+            && ReservedBytes <= MaxAsyncCaptureBytes
+            && (!CaptureNetworkSender.IsValid()
+                || CaptureNetworkSender->HasReliableCapacity(ReservedPackets, ReservedBytes))
+            && (!CaptureDiskWriter.IsValid() || CaptureDiskWriter->HasCapacity(ReservedPackets));
         // Leave authoritative frames in the receiver FIFO until output capacity
         // exists. This applies bounded upstream backpressure without skipping.
         if (Receiver->ConsumeForCapture(Latest, bCaptureHasCapacity))
@@ -1327,6 +1378,7 @@ bool ABskSceneController::LoadConfiguration()
 
 void ABskSceneController::ConfigureCaptureOutput()
 {
+    bAsyncCaptureEnabled = !FParse::Param(FCommandLine::Get(), TEXT("BskSynchronousCapture"));
     FParse::Value(FCommandLine::Get(), TEXT("BskCaptureDir="), CaptureOutputDirectory);
     FParse::Value(FCommandLine::Get(), TEXT("BskCaptureHost="), CaptureNetworkAddress);
     FParse::Value(FCommandLine::Get(), TEXT("BskCapturePort="), CaptureNetworkPort);
@@ -1783,6 +1835,7 @@ AActor* ABskSceneController::SpawnPlaceholder(const FString& ObjectName, const F
 
 void ABskSceneController::ApplyManifest(const FBskSceneManifest& Manifest)
 {
+    if (ActiveSessionId != Manifest.SessionId) CancelCaptureJobs();
     check(IsInGameThread());
     if (!ActiveSessionId.IsEmpty() && ActiveSessionId != Manifest.SessionId)
     {
@@ -2681,6 +2734,7 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
         {
             UE_LOG(LogBskUnreal, Error, TEXT("Authoritative capture render for %s frame=%lld failed: %s"),
                 *CameraId, AuthoritativeFrame.FrameId, *Error);
+            ReportCaptureFailure(Request, Error);
             continue;
         }
         RenderedCameras.Add(CameraId);
@@ -2696,6 +2750,7 @@ void ABskSceneController::UpdateAuthoritativeDataProductCaptures(const FBskRende
         {
             UE_LOG(LogBskUnreal, Error, TEXT("Authoritative capture for %s frame=%lld failed: %s"),
                 *CameraId, AuthoritativeFrame.FrameId, *Error);
+            ReportCaptureFailure(Request, Error);
         }
         CameraNextDataCaptureSimulationNanoseconds.Add(CameraId, AuthoritativeFrame.SimulationTimeNanoseconds + 1);
     }
@@ -2793,6 +2848,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
     }
 
     TArray<FCapturedDataProduct> Products;
+    TSharedPtr<FBskAsyncCaptureJob, ESPMode::ThreadSafe> AsyncJob;
     for (const EBskCaptureChannel Channel : Request.Channels)
     {
         if (Channel == EBskCaptureChannel::Rgb)
@@ -2806,6 +2862,36 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
                 return false;
             }
             if (!Request.bReuseExistingRgbTarget) Capture->CaptureScene();
+            if (bAsyncCaptureEnabled && Request.Purpose == EBskCapturePurpose::AuthoritativeDataset)
+            {
+                const uint64 Bytes = static_cast<uint64>(Resolution.X) * Resolution.Y * sizeof(FColor) + 65536;
+                if (PendingCaptureJobs.Num() >= MaxAsyncCaptureJobs || PendingCaptureBytes + Bytes > MaxAsyncCaptureBytes)
+                {
+                    OutError = TEXT("async capture admission was not reserved");
+                    return false;
+                }
+                FTextureRHIRef Texture = Capture->TextureTarget->GameThread_GetRenderTargetResource()->GetRenderTargetTexture();
+                if (!Texture || (Texture->GetFormat() != PF_B8G8R8A8 && Texture->GetFormat() != PF_R8G8B8A8))
+                {
+                    OutError = TEXT("async RGB readback requires an 8-bit BGRA/RGBA render target");
+                    return false;
+                }
+                AsyncJob = MakeShared<FBskAsyncCaptureJob, ESPMode::ThreadSafe>();
+                AsyncJob->Request = Request;
+                AsyncJob->Resolution = Resolution;
+                AsyncJob->ReservedBytes = Bytes;
+                AsyncJob->SubmittedSeconds = FPlatformTime::Seconds();
+                AsyncJob->bRgba = Texture->GetFormat() == PF_R8G8B8A8;
+                AsyncJob->Readback = MakeShared<FRHIGPUTextureReadback, ESPMode::ThreadSafe>(TEXT("BskStrictRgb"));
+                // Load the module/create the wrapper here, never from a worker.
+                AsyncJob->Wrapper = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper")).CreateImageWrapper(EImageFormat::JPEG);
+                ENQUEUE_RENDER_COMMAND(BskEnqueueRgbReadback)([Job = AsyncJob, Texture](FRHICommandListImmediate& RHICmdList)
+                {
+                    Job->Readback->EnqueueCopy(RHICmdList, Texture);
+                    Job->bCopySubmitted.Store(true);
+                });
+                continue;
+            }
             TArray<FColor> Pixels;
             FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
             ReadFlags.SetLinearToGamma(false);
@@ -2935,6 +3021,24 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
     FloatingOrigin->SetArrayField(TEXT("c_LN"), JsonMatrix3(LocalFromInertialMatrix));
     Metadata->SetObjectField(TEXT("floating_origin"), FloatingOrigin);
 
+    if (AsyncJob)
+    {
+        AsyncJob->Sequence = Sequence;
+        AsyncJob->Metadata = Metadata; // Frozen BEFORE presentation is restored.
+        PendingCaptureBytes += AsyncJob->ReservedBytes;
+        PendingCaptureJobs.Add(MoveTemp(AsyncJob));
+        return true;
+    }
+    return WriteCaptureProducts(Request, Metadata, Products, Sequence, OutError);
+}
+
+bool ABskSceneController::WriteCaptureProducts(const FBskCaptureRequest& Request,
+    const TSharedPtr<FJsonObject>& Metadata, const TArray<FCapturedDataProduct>& Products,
+    int64 Sequence, FString& OutError)
+{
+    Metadata->SetNumberField(TEXT("render_queue_frames"), Receiver ? Receiver->GetPendingFrameCount() : 0);
+    Metadata->SetNumberField(TEXT("image_send_queue_packets"), CaptureNetworkSender ? CaptureNetworkSender->GetPendingPacketCount() : 0);
+
     TArray<TSharedPtr<FJsonValue>> ProductMetadata;
     uint64 BlobOffset = 0;
     const FString Stem = FString::Printf(TEXT("%012lld_%s"), Sequence, *SafePathSegment(Request.CameraId));
@@ -2999,7 +3103,7 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
             OutError = TEXT("capture disk output was requested without an output directory");
             return false;
         }
-        Directory = FPaths::Combine(Directory, SafePathSegment(ActiveSessionId), SafePathSegment(Request.CameraId));
+        Directory = FPaths::Combine(Directory, SafePathSegment(Metadata->GetStringField(TEXT("session_id"))), SafePathSegment(Request.CameraId));
         if (!CaptureDiskWriter)
         {
             OutError = TEXT("capture disk output was requested but no disk writer is configured");
@@ -3017,6 +3121,116 @@ bool ABskSceneController::CaptureCameraDataProducts(const FBskCaptureRequest& Re
         }
     }
     return true;
+}
+
+void ABskSceneController::PollCaptureJobs()
+{
+    check(IsInGameThread());
+    for (const auto& Job : PendingCaptureJobs)
+    {
+        if (!Job->Readback || !Job->bCopySubmitted.Load() || !Job->Readback->IsReady()) continue;
+        int32 Pitch = 0, Height = 0;
+        const FColor* Source = static_cast<const FColor*>(Job->Readback->Lock(Pitch, &Height));
+        TArray<FColor> Pixels;
+        if (Source && Pitch >= Job->Resolution.X && Height >= Job->Resolution.Y)
+        {
+            Pixels.SetNumUninitialized(Job->Resolution.X * Job->Resolution.Y);
+            for (int32 Y = 0; Y < Job->Resolution.Y; ++Y)
+                FMemory::Memcpy(Pixels.GetData() + Y * Job->Resolution.X, Source + Y * Pitch,
+                                Job->Resolution.X * sizeof(FColor));
+            if (Job->bRgba) for (FColor& Pixel : Pixels) Swap(Pixel.R, Pixel.B);
+        }
+        if (Source) Job->Readback->Unlock();
+        Job->Readback.Reset();
+        Job->Metadata->SetStringField(TEXT("readback_completed_wall_time_ns"), LexToString(UnixTimeNanoseconds()));
+        if (Pixels.IsEmpty())
+        {
+            Job->Error = TEXT("GPU RGB readback returned invalid pitch/height/data");
+            continue;
+        }
+        // Independent image wrapper and owned pixels only; no scene/UObject
+        // access in the worker. Bound parallel work by MaxAsyncCaptureJobs.
+        Job->Encoded = Async(EAsyncExecution::ThreadPool,
+            [Pixels = MoveTemp(Pixels), Wrapper = MoveTemp(Job->Wrapper), Size = Job->Resolution]() mutable
+            {
+                FCapturedDataProduct Product{TEXT("rgb"), TEXT("jpeg/bgra8_srgb/quality95"), TEXT("jpg")};
+                if (Wrapper && Wrapper->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor),
+                                               Size.X, Size.Y, ERGBFormat::BGRA, 8))
+                {
+                    const TArray64<uint8>& Bytes = Wrapper->GetCompressed(95);
+                    if (Bytes.Num() <= MAX_int32) Product.Bytes.Append(Bytes.GetData(), static_cast<int32>(Bytes.Num()));
+                }
+                return Product;
+            });
+    }
+    // Workers may finish out of order. Commit in submission order so the
+    // backend's per-camera sequences and frame-pairing semantics are unchanged.
+    while (!PendingCaptureJobs.IsEmpty())
+    {
+        const auto Job = PendingCaptureJobs[0];
+        if (Job->Readback) break;
+        if (Job->Encoded.IsValid())
+        {
+            if (!Job->Encoded.IsReady()) break;
+            FCapturedDataProduct Product = Job->Encoded.Get();
+            Job->Encoded = TFuture<FCapturedDataProduct>();
+            if (Product.Bytes.IsEmpty()) Job->Error = TEXT("background JPEG encoding failed");
+            else Job->Products.Add(MoveTemp(Product));
+        }
+        uint64 Bytes = 65536;
+        for (const auto& Product : Job->Products) Bytes += Product.Bytes.Num();
+        if ((Job->Request.bSendToNetwork && CaptureNetworkSender
+                && !CaptureNetworkSender->HasReliableCapacity(1, Bytes))
+            || (Job->Request.bWriteToDisk && CaptureDiskWriter && !CaptureDiskWriter->HasCapacity(1))) break;
+        Job->Metadata->SetStringField(TEXT("capture_wall_time_ns"), LexToString(UnixTimeNanoseconds()));
+        Job->Metadata->SetNumberField(TEXT("capture_pipeline_ms"), (FPlatformTime::Seconds() - Job->SubmittedSeconds) * 1000.0);
+        Job->Metadata->SetNumberField(TEXT("capture_pending_jobs"), PendingCaptureJobs.Num());
+        if (!Job->Error.IsEmpty())
+        {
+            Job->Metadata->SetStringField(TEXT("type"), TEXT("capture_error"));
+            Job->Metadata->SetStringField(TEXT("error"), Job->Error);
+        }
+        FString Error;
+        if (!WriteCaptureProducts(Job->Request, Job->Metadata, Job->Products, Job->Sequence, Error))
+        {
+            UE_LOG(LogBskUnreal, Error, TEXT("Async capture frame=%lld failed: %s"), Job->Request.FrameId, *Error);
+            ReportCaptureFailure(Job->Request, Error);
+        }
+        PendingCaptureBytes -= Job->ReservedBytes;
+        PendingCaptureJobs.RemoveAt(0, 1, EAllowShrinking::No);
+    }
+}
+
+void ABskSceneController::CancelCaptureJobs()
+{
+    // Only session reset/renderer teardown cancels jobs, never normal STOP.
+    // Wait for queued RHI commands before releasing their resources.
+    if (!PendingCaptureJobs.IsEmpty()) FlushRenderingCommands();
+    for (const auto& Job : PendingCaptureJobs)
+        if (Job->Encoded.IsValid()) Job->Encoded.Wait();
+    PendingCaptureJobs.Reset();
+    PendingCaptureBytes = 0;
+}
+
+void ABskSceneController::ReportCaptureFailure(const FBskCaptureRequest& Request, const FString& Error)
+{
+    if (!Request.bSendToNetwork || !CaptureNetworkSender) return;
+    auto Metadata = MakeShared<FJsonObject>();
+    const int64 Sequence = ++CaptureSequence;
+    Metadata->SetStringField(TEXT("protocol"), TEXT("bsk-capture/1"));
+    Metadata->SetStringField(TEXT("type"), TEXT("capture_error"));
+    Metadata->SetStringField(TEXT("session_id"), ActiveSessionId);
+    Metadata->SetStringField(TEXT("capture_episode_id"), Request.CaptureEpisodeId);
+    Metadata->SetStringField(TEXT("camera_id"), Request.CameraId);
+    Metadata->SetStringField(TEXT("capture_sequence"), LexToString(Sequence));
+    Metadata->SetStringField(TEXT("source_frame_id"), LexToString(Request.FrameId));
+    Metadata->SetStringField(TEXT("sim_time_ns"), LexToString(Request.SimulationTimeNanoseconds));
+    Metadata->SetStringField(TEXT("stream_kind"), TEXT("authoritative"));
+    Metadata->SetStringField(TEXT("state_kind"), TEXT("authoritative"));
+    Metadata->SetBoolField(TEXT("ack_required"), true);
+    Metadata->SetStringField(TEXT("error"), Error);
+    FString OutputError;
+    WriteCaptureProducts(Request, Metadata, {}, Sequence, OutputError);
 }
 
 void ABskSceneController::AttachManifestChildren()

@@ -104,6 +104,12 @@ bool FBskTcpReceiver::ConsumeLatest(FBskRenderFrame& OutFrame)
     return ConsumeForCapture(OutFrame, true);
 }
 
+int32 FBskTcpReceiver::GetPendingFrameCount() const
+{
+    FScopeLock Lock(&LatestMutex);
+    return ReliableFrames.Num();
+}
+
 bool FBskTcpReceiver::ConsumeForCapture(FBskRenderFrame& OutFrame, bool bCaptureHasCapacity)
 {
     FScopeLock Lock(&LatestMutex);

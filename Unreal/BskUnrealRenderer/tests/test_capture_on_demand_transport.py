@@ -12,6 +12,27 @@ from bsk_render_adapter import BasiliskRenderBridge
 def unpack(packet): return json.loads(packet[4:])
 
 
+@pytest.mark.parametrize('legacy_reliable', [False, True])
+def test_strict_admission_reserves_two_slots_without_callback_wait(legacy_reliable):
+    publisher = RenderPublisher(reliable_frames=legacy_reliable)
+    with patch.object(publisher, 'start'):
+        for i in range(254):
+            publisher.publish_frame(dict(frame_id=str(i), capture_episode_id='episode-A'))
+        assert publisher.has_frame_capacity()
+        publisher.publish_frame(dict(frame_id='254', capture_episode_id='episode-A'))
+        assert not publisher.has_frame_capacity()
+        assert publisher.has_frame_capacity(reserve=1)
+        publisher.publish_frame(dict(frame_id='255', capture_episode_id='episode-A'))
+        assert not publisher.has_frame_capacity(reserve=1)
+        with patch.object(publisher._strict_frames, 'put', wraps=publisher._strict_frames.put) as put:
+            with pytest.raises(RuntimeError, match='queue full'):
+                publisher.publish_frame(dict(frame_id='256', capture_episode_id='episode-A'))
+            assert put.call_args.kwargs == {'block': False}, 'must never wait in UpdateState'
+        assert publisher.stats.frames_dropped == 0
+        assert [unpack(publisher._strict_frames.get_nowait())['frame_id'] for _ in range(256)] == [str(i) for i in range(256)]
+        assert publisher.has_frame_capacity()
+
+
 @pytest.mark.parametrize("legacy_reliable", [False, True])
 def test_explicit_idle_overrides_legacy_capture_and_stop_preserves_strict(legacy_reliable):
     publisher = RenderPublisher(reliable_frames=legacy_reliable)
