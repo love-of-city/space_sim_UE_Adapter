@@ -92,6 +92,9 @@ class RecordingOnlyPublisher:
     def publish_frame(self, _message: dict[str, Any]) -> None:
         pass
 
+    def has_frame_capacity(self, reserve: int = 2) -> bool:
+        return True
+
     def publish_event(self, _message: dict[str, Any]) -> bool:
         return True
 
@@ -176,7 +179,9 @@ class RenderPublisher:
                 except queue.Empty:
                     pass
             try:
-                target.put(packet, timeout=10.0)
+                # Capacity is reserved BETWEEN physics advances, never by
+                # sleeping inside a Basilisk/SWIG dynamics callback.
+                target.put_nowait(packet)
             except queue.Full as error:
                 raise RuntimeError("authoritative render queue full; refusing to drop a dataset frame") from error
             self.stats.frames_queued += 1
@@ -196,6 +201,17 @@ class RenderPublisher:
         self.stats.frames_queued += 1
         self._wake.set()
         self.start()
+
+    def has_frame_capacity(self, reserve: int = 2) -> bool:
+        """Single-producer admission outside physics; the worker only frees slots.
+
+        Reserve two slots for initial t=0 and the first render-grid boundary.
+        No accepted strict frame is discarded, including across STOP.
+        """
+        return (not self._stop.is_set()
+                and self._strict_frames.qsize() + reserve <= self._strict_frames.maxsize
+                and (not self.reliable_frames
+                     or self._latest_frame.qsize() + reserve <= self._latest_frame.maxsize))
 
     def publish_event(self, message: dict[str, Any]) -> bool:
         """Queue a bounded reliable event, requesting manifest recovery on overflow."""
