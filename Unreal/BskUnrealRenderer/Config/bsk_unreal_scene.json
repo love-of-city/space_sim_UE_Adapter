@@ -34,7 +34,7 @@
     "use_earth_sky_atmosphere": true,
     "celestial_vault_radius_km": 500000.0,
     "celestial_background_intensity": 0.12,
-    "sun_intensity_lux": 1.0,
+    "sun_intensity_lux": 132821.5,
     "fill_light_intensity_lux": 0.0,
     "material_exposure_bias": 0.0,
     "sun_rotation_deg": [
@@ -90,7 +90,7 @@
     "use_manual_exposure": true,
     "textured_star_mesh": "/Game/_GENERATED/Hyperlovimia/Sphere_732702C4.Sphere_732702C4",
     "earth_sphere_mesh": "/Game/_GENERATED/Hyperlovimia/Sphere_732702C4.Sphere_732702C4",
-    "sun_illuminance_scale": 0.125
+    "sun_illuminance_scale": 1.0
   },
   "objects": {
     "chaser": {
