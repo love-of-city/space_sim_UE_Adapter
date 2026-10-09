@@ -1,5 +1,7 @@
 # BSK → Unreal Engine 可视化适配器
 
+> 本项目已并入 [space_sim_server 统一仓库](https://github.com/love-of-city/space_sim_server)。后续开发、安装和问题反馈使用统一仓库中的 space_sim_UE_Adapter/ 子目录。本仓库保留历史代码与 PR 记录；旧版说明见下文，迁移步骤见 [MIGRATION.md](MIGRATION.md)。
+
 团队开发请先阅读[贡献指南](CONTRIBUTING.md)。基础 CI 不替代完整仿真、UE 和采集验收。
 
 Basilisk/MJScene 状态发送端与 UE 5.6 渲染接收端。动力学由仿真端推进，UE 负责渲染与相机采集，协议为 `bsk-render/2`。
